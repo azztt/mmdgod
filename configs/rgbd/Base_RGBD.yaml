@@ -121,3 +121,38 @@ VIS_PERIOD: 2000
 DATALOADER:
   NUM_WORKERS: 4
   SAMPLER_TRAIN: "TrainingSampler"
+
+# =============================================================================
+# Dataset Configuration
+# =============================================================================
+# Data root: /mnt/data/users/anweshan/omni3d/data
+# Manifests: /mnt/data/users/anweshan/omni3d/data/unidet3d_format/cleaned_manifests
+#
+# Manifest format (COCO-style):
+#   - images: [{file_path, depth_file_path, K, width, height, scene_type, ...}]
+#   - annotations: [{image_id, category_id, bbox_3d, ...}]
+#   - categories: [{id, name}]
+# =============================================================================
+DATASETS:
+  # Root directory for all datasets (file_path in manifests are relative to this)
+  DATA_ROOT: "/mnt/data/users/anweshan/omni3d/data"
+  
+  # Manifest directory
+  MANIFEST_ROOT: "/mnt/data/users/anweshan/omni3d/data/unidet3d_format/cleaned_manifests"
+  
+  # Available manifests:
+  # - hypersim_train_filtered.json (52461 images, 1908579 annotations, 31 categories)
+  # - hypersim_val_filtered.json
+  # - sunrgbd_val_filtered.json
+  # - multiscan_val_filtered.json
+  # - scannetpp_val_filtered.json
+  
+  # Training datasets
+  TRAIN: ("hypersim_train_rgbd",)
+  
+  # Validation/Test datasets  
+  VAL: ("hypersim_val_rgbd",)
+  TEST: ("sunrgbd_val_rgbd",)
+
+# Output directory
+OUTPUT_DIR: "./output/rgbd_training"

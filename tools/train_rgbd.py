@@ -12,10 +12,10 @@ This script extends the base Cube R-CNN training to:
 
 Usage:
     # Single GPU
-    python tools/train_rgbd.py --config-file configs/rgbd/rgbd_hypersim_to_sunrgbd.yaml
+    python tools/train_rgbd.py --config-file configs/rgbd/progressive/hypersim_to_sunrgbd.yaml
     
     # Multi-GPU
-    python tools/train_rgbd.py --config-file configs/rgbd/rgbd_hypersim_to_sunrgbd.yaml --num-gpus 4
+    python tools/train_rgbd.py --config-file configs/rgbd/progressive/hypersim_to_sunrgbd.yaml --num-gpus 4
 """
 import logging
 import os
@@ -54,6 +54,12 @@ from cubercnn.data import (
     build_detection_test_loader,
     get_omni3d_categories,
     simple_register
+)
+from cubercnn.data.datasets_rgbd import (
+    register_rgbd_datasets,
+    register_all_rgbd_datasets,
+    register_and_store_rgbd_model_metadata,
+    get_manifest_file_for_dataset,
 )
 from cubercnn.data.dataset_mapper_rgbd import DatasetMapper3D_RGBD, DatasetMapper3D_RGBD_DG
 from cubercnn.evaluation import (
@@ -347,36 +353,54 @@ def main(args):
     # Get filter settings for dataset loading
     filter_settings = data.get_filter_settings_from_cfg(cfg)
 
-    # Get category mapping
-    category_path = os.path.join(util.file_parts(args.config_file)[0], 'category_meta.json')
+    # ===========================================================================
+    # Register RGB-D datasets from manifests
+    # ===========================================================================
+    logger.info("Registering RGB-D datasets...")
+    logger.info(f"  Data root: {cfg.DATASETS.DATA_ROOT}")
+    logger.info(f"  Manifest root: {cfg.DATASETS.MANIFEST_ROOT}")
     
-    # Load datasets and categories
-    if os.path.exists(category_path):
-        categories = util.load_json(category_path)
-    else:
-        categories = get_omni3d_categories(cfg.DATASETS.TRAIN)
+    # Register all datasets specified in config
+    register_rgbd_datasets(cfg)
     
-    # Store category info in metadata
-    thing_classes = [cat['name'] for cat in categories]
-    id_map = {cat['id']: i for i, cat in enumerate(categories)}
-    
-    MetadataCatalog.get('omni3d_model').thing_classes = thing_classes
-
-    # Register datasets
-    infos = simple_register(
-        cfg.DATASETS.TRAIN + cfg.DATASETS.TEST, 
-        filter_settings, 
-        id_map
+    # Store model metadata (category info)
+    os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
+    register_and_store_rgbd_model_metadata(
+        list(cfg.DATASETS.TRAIN) + list(cfg.DATASETS.TEST),
+        cfg.OUTPUT_DIR,
+        filter_settings
     )
     
-    dataset_id_to_unknown_cats = infos['dataset_id_to_unknown_cats']
-    dataset_id_to_src = infos['dataset_id_to_src']
+    # Get category info from metadata
+    meta = MetadataCatalog.get('omni3d_model')
+    thing_classes = meta.thing_classes
+    id_map = meta.thing_dataset_id_to_contiguous_id
+    
+    logger.info(f"Registered {len(thing_classes)} categories: {thing_classes[:5]}...")
+    
+    # Create dataset_id mappings
+    # For RGBD datasets, we use a simpler mapping since each dataset has unique ID
+    dataset_id_to_unknown_cats = {}  # Can be extended for open-vocabulary detection
+    dataset_id_to_src = {}
+    
+    # Populate from training datasets
+    for dataset_name in cfg.DATASETS.TRAIN:
+        try:
+            dataset = DatasetCatalog.get(dataset_name)
+            for sample in dataset:
+                ds_id = sample.get('dataset_id', 0)
+                if ds_id not in dataset_id_to_src:
+                    dataset_id_to_src[ds_id] = dataset_name
+        except Exception as e:
+            logger.warning(f"Could not load dataset {dataset_name}: {e}")
+    
+    logger.info(f"Dataset ID mapping: {dataset_id_to_src}")
 
     # Build model
     priors = None
     if hasattr(cfg.MODEL, 'ROI_CUBE_HEAD') and cfg.MODEL.ROI_CUBE_HEAD.DIMS_PRIORS_ENABLED:
         # Compute dimension priors from training data
-        priors = util.compute_priors(cfg, categories)
+        priors = util.compute_priors(cfg, thing_classes)
     
     model = build_model_rgbd(cfg, priors=priors)
     logger.info("Model:\n{}".format(model))

@@ -12,18 +12,20 @@ _BASE_: "06_rgbd_full_dg.yaml"
 
 # Dataset configuration
 DATASETS:
-  TRAIN: ("hypersim_train_rgbd",)
-  VAL: ("sunrgbd_val_rgbd",)
-  TEST: ("sunrgbd_test_rgbd",)
-
-# Dataset paths
-HYPERSIM:
-  ROOT: "/path/to/hypersim"
-  DEPTH_TYPE: "npy"  # .npy depth files
+  # Data paths (inherited DATA_ROOT and MANIFEST_ROOT from Base_RGBD.yaml)
+  # DATA_ROOT: /mnt/data/users/anweshan/omni3d/data
+  # MANIFEST_ROOT: /mnt/data/users/anweshan/omni3d/data/unidet3d_format/cleaned_manifests
   
-SUNRGBD:
-  ROOT: "/path/to/sunrgbd"
-  DEPTH_TYPE: "image"  # depth as image
+  # Train on Hypersim (synthetic indoor)
+  TRAIN: ("hypersim_train_rgbd",)
+  TRAIN_MANIFEST: "hypersim_train_filtered.json"
+  
+  # Evaluate on SUNRGBD (real indoor) for domain transfer assessment
+  VAL: ("sunrgbd_val_rgbd",)
+  VAL_MANIFEST: "sunrgbd_val_filtered.json"
+  
+  TEST: ("sunrgbd_val_rgbd",)
+  TEST_MANIFEST: "sunrgbd_val_filtered.json"
 
 # Adjusted training for cross-domain
 # Scale: r = 128/8 = 16

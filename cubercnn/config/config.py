@@ -10,6 +10,20 @@ def get_cfg_defaults(cfg):
     # e.g., not counting as background during training
     # or as false positives during evaluation.
     cfg.DATASETS.IGNORE_NAMES = []
+    
+    # ===========================================================================
+    # RGB-D Dataset Configuration
+    # ===========================================================================
+    # Root directory for dataset files (images, depth maps)
+    cfg.DATASETS.DATA_ROOT = ""
+    
+    # Root directory for manifest JSON files
+    cfg.DATASETS.MANIFEST_ROOT = ""
+    
+    # Optional: specific manifest file names for each split
+    cfg.DATASETS.TRAIN_MANIFEST = ""
+    cfg.DATASETS.VAL_MANIFEST = ""
+    cfg.DATASETS.TEST_MANIFEST = ""
 
     # Should the datasets appear with the same probabilty
     # in batches (e.g., the imbalance from small and large
