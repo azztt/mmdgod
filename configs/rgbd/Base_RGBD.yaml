@@ -72,12 +72,13 @@ MODEL:
     DISENTANGLED_LOSS: True
 
 # Input settings
+# Match ovdgmmod/dgmmod: max 512 in any dimension
 INPUT:
   FORMAT: "BGR"
-  MIN_SIZE_TRAIN: (640, 672, 704, 736, 768, 800)
-  MAX_SIZE_TRAIN: 1333
-  MIN_SIZE_TEST: 800
-  MAX_SIZE_TEST: 1333
+  MIN_SIZE_TRAIN: (384, 416, 448, 480, 512)
+  MAX_SIZE_TRAIN: 512
+  MIN_SIZE_TEST: 512
+  MAX_SIZE_TEST: 512
 
 # Solver settings
 # =============================================================================
