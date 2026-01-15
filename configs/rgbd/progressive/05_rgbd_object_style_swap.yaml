@@ -50,9 +50,10 @@ DG:
     MIN_AREA: 100  # Minimum object area to consider
     EXPAND_RATIO: 0.1  # Bbox expansion for extraction
 
+# Training settings - gated fusion + DG augmentations
 SOLVER:
-  IMS_PER_BATCH: 12
-  BASE_LR: 0.02
-  MAX_ITER: 60000
+  IMS_PER_BATCH: 16
+  BASE_LR: 0.01
+  MAX_ITER: 200000
 
 OUTPUT_DIR: "./output/05_rgbd_object_style_swap"

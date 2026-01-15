@@ -47,9 +47,10 @@ DG:
   OBJECT_STYLE_SWAP:
     ENABLED: False
 
+# Training settings - gated fusion + augmentation
 SOLVER:
-  IMS_PER_BATCH: 12
-  BASE_LR: 0.02
-  MAX_ITER: 60000
+  IMS_PER_BATCH: 16
+  BASE_LR: 0.01
+  MAX_ITER: 200000
 
 OUTPUT_DIR: "./output/04_rgbd_fsdr"

@@ -80,13 +80,27 @@ INPUT:
   MAX_SIZE_TEST: 1333
 
 # Solver settings
+# =============================================================================
+# Omni3D Scaling Rules (from README):
+# Base indoor config: IMS_PER_BATCH=128, BASE_LR=0.08, MAX_ITER=116000
+# Scale factor r = base_batch / actual_batch = 128 / 16 = 8
+# - BASE_LR /= r  -> 0.08 / 8 = 0.01
+# - MAX_ITER *= r -> 116000 * 8 = 928000 (capped for practical training)
+# - STEPS *= r    -> (69600*8, 92800*8) = (556800, 742400)
+# - WARMUP_ITERS *= r -> 3625 * 8 = 29000
+# - EVAL_PERIOD *= r  -> 29000 * 8 = 232000 (adjusted for practical eval)
+# - VIS_PERIOD *= r   -> 2320 * 8 = 18560
+#
+# Note: For dual encoder with 4 GPUs, we use batch=16 (4/GPU) as practical target
+# Adjust MAX_ITER down to ~200k for reasonable training time
+# =============================================================================
 SOLVER:
   TYPE: "sgd"
-  IMS_PER_BATCH: 16  # Smaller batch for dual encoder
-  BASE_LR: 0.02
-  STEPS: (40000, 50000)
-  MAX_ITER: 60000
-  WARMUP_ITERS: 2000
+  IMS_PER_BATCH: 16  # 4 images per GPU × 4 GPUs
+  BASE_LR: 0.01      # 0.08 / 8 (scale factor r=8)
+  STEPS: (120000, 160000)  # Scaled and adjusted for ~200k iters
+  MAX_ITER: 200000   # Adjusted from 928k for practical training
+  WARMUP_ITERS: 5000 # ~2.5% of max_iter (standard warmup)
   WARMUP_FACTOR: 0.001
   WEIGHT_DECAY: 0.0001
   MOMENTUM: 0.9
@@ -98,10 +112,10 @@ SOLVER:
 
 # Testing
 TEST:
-  EVAL_PERIOD: 10000
+  EVAL_PERIOD: 20000  # Evaluate every 20k iters
   DETECTIONS_PER_IMAGE: 100
 
-VIS_PERIOD: 1000
+VIS_PERIOD: 2000
 
 # Domain generalization augmentations
 DATALOADER:

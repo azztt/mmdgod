@@ -41,9 +41,11 @@ MODEL:
       DROPOUT: 0.1
       FUSION_MODE: "concat_proj"  # 'concat_proj', 'add', 'gated'
 
+# Training settings - windowed attention uses more memory
+# Scale: r = 128/12 ≈ 10.67
 SOLVER:
-  IMS_PER_BATCH: 10  # Reduced further for attention memory
-  BASE_LR: 0.015  # Slightly lower LR for attention
-  MAX_ITER: 60000
+  IMS_PER_BATCH: 12   # Reduced for attention memory
+  BASE_LR: 0.0075     # 0.08 / 10.67
+  MAX_ITER: 200000
 
 OUTPUT_DIR: "./output/03_rgbd_windowed"

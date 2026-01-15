@@ -67,15 +67,19 @@ DG:
     PROBABILITY: 0.1  # 10% chance to zero out depth
 
 # Training settings
+# Inherits base scaling from Base_RGBD.yaml
+# Windowed attention requires more memory, reduce batch to 12
+# Scale factor r = 128 / 12 ≈ 10.67
 SOLVER:
-  IMS_PER_BATCH: 10
-  BASE_LR: 0.015
-  STEPS: (50000, 60000)
-  MAX_ITER: 70000
-  WARMUP_ITERS: 3000
-  WARMUP_FACTOR: 0.001
+  IMS_PER_BATCH: 12   # Reduced for windowed attention memory
+  BASE_LR: 0.0075     # 0.08 / 10.67
+  STEPS: (150000, 200000)  # Adjusted for 250k iters
+  MAX_ITER: 250000    # Longer training for full DG stack
+  WARMUP_ITERS: 6250  # 2.5% of max_iter
 
 TEST:
-  EVAL_PERIOD: 10000
+  EVAL_PERIOD: 25000  # Evaluate every 25k iters
+
+VIS_PERIOD: 2500
 
 OUTPUT_DIR: "./output/06_rgbd_full_dg"

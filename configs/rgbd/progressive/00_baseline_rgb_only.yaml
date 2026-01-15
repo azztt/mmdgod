@@ -64,16 +64,21 @@ INPUT:
 DATALOADER:
   NUM_WORKERS: 4
 
+# =============================================================================
+# Omni3D Scaling (from README)
+# Base indoor: IMS_PER_BATCH=128, BASE_LR=0.08, MAX_ITER=116000
+# Scale: r = 128/16 = 8
+# =============================================================================
 SOLVER:
   TYPE: "sgd"
-  IMS_PER_BATCH: 16
-  BASE_LR: 0.02
-  STEPS: (40000, 50000)
-  MAX_ITER: 60000
-  WARMUP_ITERS: 2000
+  IMS_PER_BATCH: 16   # RGB-only can use larger batch
+  BASE_LR: 0.01       # 0.08 / 8
+  STEPS: (120000, 160000)
+  MAX_ITER: 200000
+  WARMUP_ITERS: 5000  # 2.5% of max_iter
   WARMUP_FACTOR: 0.001
 
 TEST:
-  EVAL_PERIOD: 10000
+  EVAL_PERIOD: 20000
 
 OUTPUT_DIR: "./output/00_baseline_rgb_only"

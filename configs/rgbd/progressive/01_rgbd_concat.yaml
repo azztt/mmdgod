@@ -33,9 +33,10 @@ MODEL:
   FUSION_TYPE: "concat"
 
 # Standard training setup
+# Inherits base scaling from Base_RGBD.yaml (batch=16, lr=0.01)
 SOLVER:
-  IMS_PER_BATCH: 12  # Reduced for dual encoder memory
-  BASE_LR: 0.02
-  MAX_ITER: 60000
+  IMS_PER_BATCH: 16   # 4 per GPU × 4 GPUs
+  BASE_LR: 0.01       # From Base_RGBD scaling
+  MAX_ITER: 200000    # ~200k iterations
 
 OUTPUT_DIR: "./output/01_rgbd_concat"
