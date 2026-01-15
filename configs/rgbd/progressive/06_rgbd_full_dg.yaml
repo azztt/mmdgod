@@ -18,13 +18,17 @@ MODEL:
   
   USE_DUAL_ENCODER: True
   
-  # RGB encoder: heavily frozen for domain-invariant features
+  # RGB encoder: fully frozen (dgmmod: frozen_stages=4 = all stages)
+  # Rationale: Pretrained RGB features are domain-invariant
   RGB_RESNET_DEPTH: 50
-  RGB_FREEZE_AT: 4
+  RGB_FROZEN: True
+  RGB_FROZEN_STAGES: 4  # Freeze stages 0-4 (conv1, layer1-4)
   
-  # Depth encoder: less frozen, learns depth representation
+  # Depth encoder: partially frozen (dgmmod: frozen_stages=2)
+  # Rationale: Early layers learn general gradients, later layers adapt to depth
   DEPTH_RESNET_DEPTH: 50
-  DEPTH_FREEZE_AT: 2
+  DEPTH_FROZEN: False
+  DEPTH_FROZEN_STAGES: 2  # Freeze stages 0-2, train layer3-4
   
   # Advanced windowed attention fusion
   FUSION_TYPE: "windowed"

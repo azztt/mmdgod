@@ -10,13 +10,17 @@ MODEL:
   # Enable dual encoder for RGB and depth
   USE_DUAL_ENCODER: True
   
-  # RGB encoder settings (more frozen for domain-invariant features)
+  # RGB encoder settings (fully frozen for domain-invariant features)
+  # dgmmod: frozen=True, frozen_stages=4 (all stages frozen)
   RGB_RESNET_DEPTH: 50
-  RGB_FREEZE_AT: 4  # Freeze entire backbone (stem + all stages)
+  RGB_FROZEN: True
+  RGB_FROZEN_STAGES: 4  # Freeze stages 0-4 (conv1, layer1-4)
   
-  # Depth encoder settings (less frozen to adapt to depth modality)
+  # Depth encoder settings (partially frozen to adapt to depth modality)
+  # dgmmod: frozen=False, frozen_stages=2 (layer3-4 trainable)
   DEPTH_RESNET_DEPTH: 50
-  DEPTH_FREEZE_AT: 2  # Only freeze stem and first stage
+  DEPTH_FROZEN: False
+  DEPTH_FROZEN_STAGES: 2  # Freeze stages 0-2, train layer3-4
   
   # Fusion type: 'concat', 'add', 'gated'
   FUSION_TYPE: "concat"

@@ -524,11 +524,17 @@ def build_simple_dual_encoder_backbone(cfg, input_shape: ShapeSpec, priors=None)
     Returns:
         Backbone with dual encoder and FPN
     """
-    # Get config values
+    # Get config values (support both old FREEZE_AT and new FROZEN_STAGES keys)
     rgb_depth = getattr(cfg.MODEL, 'RGB_RESNET_DEPTH', cfg.MODEL.RESNETS.DEPTH)
     depth_resnet_depth = getattr(cfg.MODEL, 'DEPTH_RESNET_DEPTH', cfg.MODEL.RESNETS.DEPTH)
-    rgb_freeze = getattr(cfg.MODEL, 'RGB_FREEZE_AT', 4)
-    depth_freeze = getattr(cfg.MODEL, 'DEPTH_FREEZE_AT', 2)
+    
+    # New config keys (dgmmod style): RGB_FROZEN_STAGES, DEPTH_FROZEN_STAGES
+    # Old config keys: RGB_FREEZE_AT, DEPTH_FREEZE_AT
+    rgb_frozen_stages = getattr(cfg.MODEL, 'RGB_FROZEN_STAGES', 
+                                getattr(cfg.MODEL, 'RGB_FREEZE_AT', 4))
+    depth_frozen_stages = getattr(cfg.MODEL, 'DEPTH_FROZEN_STAGES',
+                                  getattr(cfg.MODEL, 'DEPTH_FREEZE_AT', 2))
+    
     fusion_type = getattr(cfg.MODEL, 'FUSION_TYPE', 'concat')
     imagenet_pretrain = cfg.MODEL.WEIGHTS_PRETRAIN + cfg.MODEL.WEIGHTS == ''
     
@@ -538,8 +544,8 @@ def build_simple_dual_encoder_backbone(cfg, input_shape: ShapeSpec, priors=None)
         input_shape=input_shape,
         rgb_depth=rgb_depth,
         depth_depth=depth_resnet_depth,
-        rgb_freeze_at=rgb_freeze,
-        depth_freeze_at=depth_freeze,
+        rgb_freeze_at=rgb_frozen_stages,
+        depth_freeze_at=depth_frozen_stages,
         fusion_type=fusion_type,
         pretrained=imagenet_pretrain,
     )

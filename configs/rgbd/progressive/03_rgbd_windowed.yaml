@@ -18,12 +18,15 @@ MODEL:
   
   USE_DUAL_ENCODER: True
   
-  # Same encoder setup
+  # RGB encoder: fully frozen (dgmmod: frozen_stages=4)
   RGB_RESNET_DEPTH: 50
-  RGB_FREEZE_AT: 4
+  RGB_FROZEN: True
+  RGB_FROZEN_STAGES: 4
   
+  # Depth encoder: partially frozen (dgmmod: frozen_stages=2)
   DEPTH_RESNET_DEPTH: 50
-  DEPTH_FREEZE_AT: 2
+  DEPTH_FROZEN: False
+  DEPTH_FROZEN_STAGES: 2
   
   # Adaptive MultiMAE-style windowed fusion
   FUSION_TYPE: "windowed"
