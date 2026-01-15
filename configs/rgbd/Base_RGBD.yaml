@@ -1,0 +1,105 @@
+# Base configuration for RGB-D domain-generalized 3D detection
+# This config file sets up the dual encoder backbone and RGB-D data loading
+
+_BASE_: "../Base.yaml"
+
+# RGB-D specific model settings
+MODEL:
+  META_ARCHITECTURE: "RCNN3D_RGBD"
+  
+  # Enable dual encoder for RGB and depth
+  USE_DUAL_ENCODER: True
+  
+  # RGB encoder settings (more frozen for domain-invariant features)
+  RGB_RESNET_DEPTH: 50
+  RGB_FREEZE_AT: 4  # Freeze entire backbone (stem + all stages)
+  
+  # Depth encoder settings (less frozen to adapt to depth modality)
+  DEPTH_RESNET_DEPTH: 50
+  DEPTH_FREEZE_AT: 2  # Only freeze stem and first stage
+  
+  # Fusion type: 'concat', 'add', 'gated'
+  FUSION_TYPE: "concat"
+  
+  # Depth normalization (depth maps are assumed to be in [-1, 1])
+  DEPTH_PIXEL_MEAN: 0.0
+  DEPTH_PIXEL_STD: 1.0
+  
+  # Standard pixel normalization for RGB
+  PIXEL_MEAN: [103.530, 116.280, 123.675]
+  PIXEL_STD: [57.375, 57.120, 58.395]
+  
+  # FPN settings
+  FPN:
+    IN_FEATURES: ["res2", "res3", "res4", "res5"]
+    OUT_CHANNELS: 256
+    NORM: "GN"
+    FUSE_TYPE: "sum"
+  
+  # RPN settings
+  RPN:
+    IN_FEATURES: ["p2", "p3", "p4", "p5", "p6"]
+    PRE_NMS_TOPK_TRAIN: 2000
+    PRE_NMS_TOPK_TEST: 1000
+    POST_NMS_TOPK_TRAIN: 1000
+    POST_NMS_TOPK_TEST: 1000
+  
+  # ROI settings for 3D detection
+  ROI_HEADS:
+    NAME: "ROIHeads3D"
+    IN_FEATURES: ["p2", "p3", "p4", "p5"]
+    IOU_THRESHOLDS: [0.3, 0.5]
+    
+  ROI_BOX_HEAD:
+    NAME: "CubeHead"
+    POOLER_TYPE: "ROIAlignV2"
+    POOLER_RESOLUTION: 7
+    POOLER_SAMPLING_RATIO: 0
+    
+  # Cube head specific settings
+  ROI_CUBE_HEAD:
+    USE_CONFIDENCE: True
+    CLUSTER_BINS: 1
+    Z_TYPE: "direct"
+    POSE_TYPE: "6d"
+    DIMS_PRIORS_ENABLED: True
+    VIRTUAL_DEPTH: True
+    VIRTUAL_FOCAL: 512.0
+    DISENTANGLED_LOSS: True
+
+# Input settings
+INPUT:
+  FORMAT: "BGR"
+  MIN_SIZE_TRAIN: (640, 672, 704, 736, 768, 800)
+  MAX_SIZE_TRAIN: 1333
+  MIN_SIZE_TEST: 800
+  MAX_SIZE_TEST: 1333
+
+# Solver settings
+SOLVER:
+  TYPE: "sgd"
+  IMS_PER_BATCH: 16  # Smaller batch for dual encoder
+  BASE_LR: 0.02
+  STEPS: (40000, 50000)
+  MAX_ITER: 60000
+  WARMUP_ITERS: 2000
+  WARMUP_FACTOR: 0.001
+  WEIGHT_DECAY: 0.0001
+  MOMENTUM: 0.9
+  CLIP_GRADIENTS:
+    ENABLED: True
+    CLIP_TYPE: "norm"
+    CLIP_VALUE: 10.0
+    NORM_TYPE: 2.0
+
+# Testing
+TEST:
+  EVAL_PERIOD: 10000
+  DETECTIONS_PER_IMAGE: 100
+
+VIS_PERIOD: 1000
+
+# Domain generalization augmentations
+DATALOADER:
+  NUM_WORKERS: 4
+  SAMPLER_TRAIN: "TrainingSampler"

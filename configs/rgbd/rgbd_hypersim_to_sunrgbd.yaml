@@ -1,0 +1,44 @@
+# Configuration for RGB-D training on Hypersim -> SUNRGBD domain generalization task
+# Train on Hypersim (synthetic), evaluate on SUNRGBD (real)
+
+_BASE_: "Base_RGBD.yaml"
+
+# Dataset configuration
+DATASETS:
+  # Training on Hypersim synthetic data
+  TRAIN: ('Hypersim_train', 'Hypersim_val')
+  # Test on real SUNRGBD data
+  TEST: ('SUNRGBD_test',)
+  
+  # Common indoor object categories
+  CATEGORY_NAMES: (
+    'chair', 'table', 'sofa', 'bed', 'desk', 
+    'cabinet', 'bookcase', 'shelf', 'lamp', 'pillow',
+    'door', 'window', 'picture', 'mirror', 'curtain',
+    'sink', 'toilet', 'bathtub', 'counter', 'refrigerator',
+    'oven', 'television', 'box', 'bin', 'cup'
+  )
+
+MODEL:
+  ROI_HEADS:
+    NUM_CLASSES: 25
+  
+  # Dual encoder with concat fusion (baseline)
+  FUSION_TYPE: "concat"
+  
+  # Slightly less frozen RGB backbone for better adaptation
+  RGB_FREEZE_AT: 3  # Freeze stem + res2 + res3
+  DEPTH_FREEZE_AT: 2  # Freeze stem + res2
+
+# Solver settings for Hypersim (larger dataset)
+SOLVER:
+  IMS_PER_BATCH: 8  # Adjust based on GPU memory
+  BASE_LR: 0.01
+  STEPS: (30000, 40000)
+  MAX_ITER: 50000
+  WARMUP_ITERS: 1000
+
+TEST:
+  EVAL_PERIOD: 5000
+
+OUTPUT_DIR: "./output/rgbd_hypersim_to_sunrgbd"

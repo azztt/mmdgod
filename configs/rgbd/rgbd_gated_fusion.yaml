@@ -1,0 +1,37 @@
+# Configuration for RGB-D training with gated fusion
+# Uses attention-based gating to combine RGB and depth features
+
+_BASE_: "Base_RGBD.yaml"
+
+# Dataset configuration  
+DATASETS:
+  TRAIN: ('Hypersim_train', 'Hypersim_val')
+  TEST: ('SUNRGBD_test',)
+  CATEGORY_NAMES: (
+    'chair', 'table', 'sofa', 'bed', 'desk', 
+    'cabinet', 'bookcase', 'shelf', 'lamp', 'pillow',
+    'door', 'window', 'picture', 'mirror', 'curtain',
+    'sink', 'toilet', 'bathtub', 'counter', 'refrigerator',
+    'oven', 'television', 'box', 'bin', 'cup'
+  )
+
+MODEL:
+  ROI_HEADS:
+    NUM_CLASSES: 25
+  
+  # Use gated fusion (attention-based)
+  FUSION_TYPE: "gated"
+  
+  # Gated fusion specific settings
+  FUSION:
+    NUM_HEADS: 8
+    DROPOUT: 0.1
+    DIM_FEEDFORWARD: 1024
+
+SOLVER:
+  IMS_PER_BATCH: 8
+  BASE_LR: 0.01
+  STEPS: (30000, 40000)
+  MAX_ITER: 50000
+
+OUTPUT_DIR: "./output/rgbd_gated_fusion"
