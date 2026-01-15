@@ -1,0 +1,39 @@
+# Step 1: RGB-D with Simple Concat Fusion
+#
+# Adds depth encoder and simple concatenation fusion.
+# First step in multimodal learning - late fusion approach.
+# Establishes whether depth helps before adding complexity.
+#
+# Changes from 00_baseline:
+#   + Dual encoder backbone (separate RGB and Depth ResNet50)
+#   + Simple concat fusion at FPN level
+#   + Depth data loading
+#
+# Command: python tools/train_rgbd.py --config-file configs/rgbd/progressive/01_rgbd_concat.yaml
+
+_BASE_: "../Base_RGBD.yaml"
+
+MODEL:
+  META_ARCHITECTURE: "RCNN3D_RGBD"
+  
+  # Enable dual encoder
+  USE_DUAL_ENCODER: True
+  
+  # RGB encoder: heavily frozen for domain-invariant features
+  RGB_RESNET_DEPTH: 50
+  RGB_FREEZE_AT: 4
+  
+  # Depth encoder: less frozen to learn depth representation
+  DEPTH_RESNET_DEPTH: 50
+  DEPTH_FREEZE_AT: 2
+  
+  # Simple concat fusion (baseline multimodal)
+  FUSION_TYPE: "concat"
+
+# Standard training setup
+SOLVER:
+  IMS_PER_BATCH: 12  # Reduced for dual encoder memory
+  BASE_LR: 0.02
+  MAX_ITER: 60000
+
+OUTPUT_DIR: "./output/01_rgbd_concat"

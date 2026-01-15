@@ -1,0 +1,42 @@
+# Step 2: RGB-D with Gated Fusion
+#
+# Upgrades fusion from simple concat to learned gating mechanism.
+# Gated fusion dynamically weighs RGB vs depth contributions.
+#
+# Changes from 01_rgbd_concat:
+#   + Gated fusion instead of concat
+#   + Cross-attention mechanism for modal weighting
+#   + Modality-specific gates
+#
+# Command: python tools/train_rgbd.py --config-file configs/rgbd/progressive/02_rgbd_gated.yaml
+
+_BASE_: "../Base_RGBD.yaml"
+
+MODEL:
+  META_ARCHITECTURE: "RCNN3D_RGBD"
+  
+  USE_DUAL_ENCODER: True
+  
+  # Same encoder setup
+  RGB_RESNET_DEPTH: 50
+  RGB_FREEZE_AT: 4
+  
+  DEPTH_RESNET_DEPTH: 50
+  DEPTH_FREEZE_AT: 2
+  
+  # Gated fusion with learned attention
+  FUSION_TYPE: "gated"
+  
+  # Gated fusion hyperparameters
+  FUSION:
+    GATED:
+      REDUCTION: 16
+      NUM_HEADS: 8
+      USE_CROSS_ATTENTION: True
+
+SOLVER:
+  IMS_PER_BATCH: 12
+  BASE_LR: 0.02
+  MAX_ITER: 60000
+
+OUTPUT_DIR: "./output/02_rgbd_gated"

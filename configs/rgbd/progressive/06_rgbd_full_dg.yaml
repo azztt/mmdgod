@@ -1,0 +1,77 @@
+# Step 6: Full Domain Generalization Stack
+#
+# Complete RGB-D domain generalization configuration with all components:
+# - Dual encoder backbone (RGB + Depth)
+# - Adaptive MultiMAE-style windowed attention fusion
+# - FSDR augmentation
+# - Object Style Swap augmentation
+# - Depth dropout for modality robustness
+#
+# This is the recommended production config for cross-domain transfer.
+#
+# Command: python tools/train_rgbd.py --config-file configs/rgbd/progressive/06_rgbd_full_dg.yaml
+
+_BASE_: "../Base_RGBD.yaml"
+
+MODEL:
+  META_ARCHITECTURE: "RCNN3D_RGBD"
+  
+  USE_DUAL_ENCODER: True
+  
+  # RGB encoder: heavily frozen for domain-invariant features
+  RGB_RESNET_DEPTH: 50
+  RGB_FREEZE_AT: 4
+  
+  # Depth encoder: less frozen, learns depth representation
+  DEPTH_RESNET_DEPTH: 50
+  DEPTH_FREEZE_AT: 2
+  
+  # Advanced windowed attention fusion
+  FUSION_TYPE: "windowed"
+  
+  FUSION:
+    WINDOWED:
+      NUM_HEADS: 8
+      NUM_BLOCKS: 2
+      BASE_WINDOW_SIZE: 7
+      MLP_RATIO: 4.0
+      DROPOUT: 0.1
+      FUSION_MODE: "concat_proj"
+
+# Full domain generalization augmentation stack
+DG:
+  ENABLED: True
+  
+  # Frequency Space Domain Randomization
+  FSDR:
+    ENABLED: True
+    PROBABILITY: 0.5
+    VARIANT_BANDS: [[0, 2], [32, 64]]
+    BLOCK_SIZE: 64
+  
+  # Object-wise style transfer
+  OBJECT_STYLE_SWAP:
+    ENABLED: True
+    PROBABILITY: 0.3
+    BLEND_MODE: "alpha"
+    ALPHA: 0.7
+    MIN_AREA: 100
+  
+  # Depth dropout for modality robustness
+  DEPTH_DROPOUT:
+    ENABLED: True
+    PROBABILITY: 0.1  # 10% chance to zero out depth
+
+# Training settings
+SOLVER:
+  IMS_PER_BATCH: 10
+  BASE_LR: 0.015
+  STEPS: (50000, 60000)
+  MAX_ITER: 70000
+  WARMUP_ITERS: 3000
+  WARMUP_FACTOR: 0.001
+
+TEST:
+  EVAL_PERIOD: 10000
+
+OUTPUT_DIR: "./output/06_rgbd_full_dg"

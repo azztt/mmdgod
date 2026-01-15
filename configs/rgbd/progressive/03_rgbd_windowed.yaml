@@ -1,0 +1,46 @@
+# Step 3: RGB-D with Adaptive MultiMAE-style Windowed Attention Fusion
+#
+# Most advanced fusion module using windowed cross-modal attention.
+# Inspired by MultiMAE/CuTR architecture for multi-modal learning.
+# Handles resolution asymmetry with adaptive window sizes.
+#
+# Changes from 02_rgbd_gated:
+#   + Windowed cross-modal attention blocks
+#   + Adaptive window sizing for resolution matching
+#   + Transformer-style fusion with MLP layers
+#
+# Command: python tools/train_rgbd.py --config-file configs/rgbd/progressive/03_rgbd_windowed.yaml
+
+_BASE_: "../Base_RGBD.yaml"
+
+MODEL:
+  META_ARCHITECTURE: "RCNN3D_RGBD"
+  
+  USE_DUAL_ENCODER: True
+  
+  # Same encoder setup
+  RGB_RESNET_DEPTH: 50
+  RGB_FREEZE_AT: 4
+  
+  DEPTH_RESNET_DEPTH: 50
+  DEPTH_FREEZE_AT: 2
+  
+  # Adaptive MultiMAE-style windowed fusion
+  FUSION_TYPE: "windowed"
+  
+  # Windowed fusion hyperparameters
+  FUSION:
+    WINDOWED:
+      NUM_HEADS: 8
+      NUM_BLOCKS: 2
+      BASE_WINDOW_SIZE: 7
+      MLP_RATIO: 4.0
+      DROPOUT: 0.1
+      FUSION_MODE: "concat_proj"  # 'concat_proj', 'add', 'gated'
+
+SOLVER:
+  IMS_PER_BATCH: 10  # Reduced further for attention memory
+  BASE_LR: 0.015  # Slightly lower LR for attention
+  MAX_ITER: 60000
+
+OUTPUT_DIR: "./output/03_rgbd_windowed"

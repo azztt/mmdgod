@@ -1,0 +1,79 @@
+# Step 0: RGB-Only Baseline Configuration
+# 
+# This is the baseline config using only RGB input with standard Cube R-CNN.
+# No depth encoder, no fusion, no domain generalization augmentations.
+# Use this to establish baseline performance before adding RGBD and DG components.
+#
+# Command: python tools/train_net.py --config-file configs/rgbd/progressive/00_baseline_rgb_only.yaml
+
+_BASE_: "../../Base_Omni3D.yaml"
+
+# Standard Cube R-CNN architecture (RGB only)
+MODEL:
+  META_ARCHITECTURE: "RCNN3D"
+  
+  # Single backbone for RGB
+  BACKBONE:
+    NAME: "build_resnet_fpn_backbone"
+    FREEZE_AT: 2
+  
+  RESNETS:
+    DEPTH: 50
+    OUT_FEATURES: ["res2", "res3", "res4", "res5"]
+    NORM: "FrozenBN"
+  
+  FPN:
+    IN_FEATURES: ["res2", "res3", "res4", "res5"]
+    OUT_CHANNELS: 256
+    NORM: "GN"
+    FUSE_TYPE: "sum"
+  
+  RPN:
+    IN_FEATURES: ["p2", "p3", "p4", "p5", "p6"]
+    PRE_NMS_TOPK_TRAIN: 2000
+    PRE_NMS_TOPK_TEST: 1000
+    POST_NMS_TOPK_TRAIN: 1000
+    POST_NMS_TOPK_TEST: 1000
+  
+  ROI_HEADS:
+    NAME: "ROIHeads3D"
+    IN_FEATURES: ["p2", "p3", "p4", "p5"]
+    
+  ROI_BOX_HEAD:
+    NAME: "CubeHead"
+    POOLER_TYPE: "ROIAlignV2"
+    POOLER_RESOLUTION: 7
+    
+  ROI_CUBE_HEAD:
+    USE_CONFIDENCE: True
+    Z_TYPE: "direct"
+    POSE_TYPE: "6d"
+    DIMS_PRIORS_ENABLED: True
+    VIRTUAL_DEPTH: True
+    VIRTUAL_FOCAL: 512.0
+    DISENTANGLED_LOSS: True
+
+INPUT:
+  FORMAT: "BGR"
+  MIN_SIZE_TRAIN: (640, 704, 768, 800)
+  MAX_SIZE_TRAIN: 1333
+  MIN_SIZE_TEST: 800
+  MAX_SIZE_TEST: 1333
+
+# No depth-specific augmentations
+DATALOADER:
+  NUM_WORKERS: 4
+
+SOLVER:
+  TYPE: "sgd"
+  IMS_PER_BATCH: 16
+  BASE_LR: 0.02
+  STEPS: (40000, 50000)
+  MAX_ITER: 60000
+  WARMUP_ITERS: 2000
+  WARMUP_FACTOR: 0.001
+
+TEST:
+  EVAL_PERIOD: 10000
+
+OUTPUT_DIR: "./output/00_baseline_rgb_only"

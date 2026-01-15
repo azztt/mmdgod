@@ -1,0 +1,51 @@
+# Step 4: Add FSDR (Frequency Space Domain Randomization)
+#
+# Introduces domain generalization through frequency-based augmentation.
+# FSDR applies histogram matching on DCT frequency bands to simulate
+# diverse domain shifts while preserving semantic structure.
+#
+# Changes from 03_rgbd_windowed:
+#   + FSDR augmentation enabled
+#   + DCT-based frequency manipulation
+#   + Histogram matching on variant bands
+#
+# Command: python tools/train_rgbd.py --config-file configs/rgbd/progressive/04_rgbd_fsdr.yaml
+
+_BASE_: "../Base_RGBD.yaml"
+
+MODEL:
+  META_ARCHITECTURE: "RCNN3D_RGBD"
+  
+  USE_DUAL_ENCODER: True
+  
+  RGB_RESNET_DEPTH: 50
+  RGB_FREEZE_AT: 4
+  
+  DEPTH_RESNET_DEPTH: 50
+  DEPTH_FREEZE_AT: 2
+  
+  # Gated fusion (stable choice for DG experiments)
+  FUSION_TYPE: "gated"
+
+# Domain generalization augmentations
+DG:
+  ENABLED: True
+  
+  # Frequency Space Domain Randomization
+  FSDR:
+    ENABLED: True
+    PROBABILITY: 0.5
+    # Variant bands: low frequencies (0-2) + high frequencies (32-64)
+    VARIANT_BANDS: [[0, 2], [32, 64]]
+    BLOCK_SIZE: 64
+  
+  # Object Style Swap (disabled for now)
+  OBJECT_STYLE_SWAP:
+    ENABLED: False
+
+SOLVER:
+  IMS_PER_BATCH: 12
+  BASE_LR: 0.02
+  MAX_ITER: 60000
+
+OUTPUT_DIR: "./output/04_rgbd_fsdr"

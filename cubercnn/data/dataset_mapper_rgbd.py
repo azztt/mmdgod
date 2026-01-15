@@ -274,6 +274,7 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
     
     Adds domain generalization specific augmentations:
     - FSDR: Frequency Space Domain Randomization
+    - Object Style Swap: Object-wise appearance transfer
     - Photometric jitter
     - Depth noise/dropout
     - Scene-aware augmentations
@@ -286,6 +287,8 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
         depth_normalize: Whether to normalize depth
         use_fsdr: Enable FSDR augmentation
         fsdr_prob: Probability of applying FSDR
+        use_object_style_swap: Enable object style swap augmentation
+        object_style_swap_prob: Per-object probability
         use_depth_dropout: Enable depth dropout
         depth_dropout_prob: Probability of depth dropout
         use_photometric: Enable photometric jitter
@@ -301,6 +304,8 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
         depth_normalize: bool = True,
         use_fsdr: bool = True,
         fsdr_prob: float = 0.5,
+        use_object_style_swap: bool = False,
+        object_style_swap_prob: float = 0.3,
         use_depth_dropout: bool = True,
         depth_dropout_prob: float = 0.3,
         use_photometric: bool = True,
@@ -316,10 +321,34 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
         
         self.use_fsdr = use_fsdr
         self.fsdr_prob = fsdr_prob
+        self.use_object_style_swap = use_object_style_swap
+        self.object_style_swap_prob = object_style_swap_prob
         self.use_depth_dropout = use_depth_dropout
         self.depth_dropout_prob = depth_dropout_prob
         self.use_photometric = use_photometric
         self.photometric_prob = photometric_prob
+        
+        # Initialize Object Style Swap if enabled
+        self.object_style_swap = None
+        if use_object_style_swap:
+            try:
+                from .dg_augmentations import ObjectStyleSwap
+                self.object_style_swap = ObjectStyleSwap(
+                    p=object_style_swap_prob,
+                    blend_mode='alpha',
+                    alpha=0.7,
+                )
+            except ImportError:
+                print("Warning: Could not import ObjectStyleSwap augmentation")
+        
+        # Initialize FSDR if enabled
+        self.fsdr = None
+        if use_fsdr:
+            try:
+                from .dg_augmentations import DGFSDR
+                self.fsdr = DGFSDR(p=fsdr_prob)
+            except ImportError:
+                pass  # Fall back to inline implementation
         
         # Initialize augmentation transforms
         if use_photometric:
@@ -327,6 +356,26 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
             self.color_jitter = TV.ColorJitter(
                 brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1
             )
+    
+    def build_object_style_index(self, dataset_dicts):
+        """Build category index for object style swap from dataset.
+        
+        Call this after loading dataset to enable object style swap.
+        
+        Args:
+            dataset_dicts: List of dataset annotation dictionaries
+        """
+        if self.object_style_swap is not None:
+            self.object_style_swap.build_category_index(dataset_dicts)
+    
+    def set_fsdr_references(self, image_paths):
+        """Set reference images for FSDR histogram matching.
+        
+        Args:
+            image_paths: List of paths to reference images
+        """
+        if self.fsdr is not None:
+            self.fsdr.set_reference_images(image_paths)
     
     def _apply_fsdr(self, image: np.ndarray, scene_type: str = None) -> np.ndarray:
         """Apply Frequency Space Domain Randomization.
@@ -470,10 +519,17 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
         
         # Apply domain generalization augmentations (training only)
         if self.is_train:
+            # Object Style Swap (before geometric augmentations)
+            if self.object_style_swap is not None and "annotations" in dataset_dict:
+                image = self.object_style_swap(image, dataset_dict["annotations"])
+            
             # FSDR augmentation
-            if self.use_fsdr and np.random.random() < self.fsdr_prob:
-                scene_type = dataset_dict.get('scene_type', None)
-                image = self._apply_fsdr(image, scene_type)
+            if self.use_fsdr:
+                if self.fsdr is not None:
+                    image = self.fsdr(image)
+                elif np.random.random() < self.fsdr_prob:
+                    scene_type = dataset_dict.get('scene_type', None)
+                    image = self._apply_fsdr(image, scene_type)
             
             # Photometric jitter
             if self.use_photometric and np.random.random() < self.photometric_prob:

@@ -251,6 +251,44 @@ class DualEncoderBackbone(Backbone):
                 
                 self._out_feature_channels[key] = out_ch
         
+        elif fusion_type == 'windowed':
+            # Adaptive MultiMAE-style windowed attention fusion
+            from ..fusion import AdaptiveMultiMAEFusion
+            
+            self._out_feature_channels = {}
+            self.windowed_fusion = nn.ModuleDict()
+            
+            # Get windowed fusion config
+            windowed_cfg = getattr(cfg.MODEL, 'FUSION', {})
+            windowed_params = getattr(windowed_cfg, 'WINDOWED', {})
+            
+            num_heads = getattr(windowed_params, 'NUM_HEADS', 8)
+            num_blocks = getattr(windowed_params, 'NUM_BLOCKS', 2)
+            base_window_size = getattr(windowed_params, 'BASE_WINDOW_SIZE', 7)
+            dropout = getattr(windowed_params, 'DROPOUT', 0.1)
+            fusion_mode = getattr(windowed_params, 'FUSION_MODE', 'concat_proj')
+            
+            for key in ['res2', 'res3', 'res4', 'res5']:
+                rgb_ch = rgb_channels[key]
+                depth_ch = depth_channels[key]
+                
+                # Project depth to same dimension as RGB first
+                if rgb_ch != depth_ch:
+                    self.windowed_fusion[f'{key}_depth_proj'] = nn.Conv2d(
+                        depth_ch, rgb_ch, kernel_size=1
+                    )
+                
+                # Windowed fusion operates on same-dimension features
+                self.windowed_fusion[key] = AdaptiveMultiMAEFusion(
+                    feature_dim=rgb_ch,
+                    num_heads=min(num_heads, rgb_ch // 32),  # Ensure heads divide dim
+                    num_blocks=num_blocks,
+                    base_window_size=base_window_size,
+                    dropout=dropout,
+                    fusion_mode=fusion_mode,
+                )
+                self._out_feature_channels[key] = rgb_ch
+        
         else:
             raise ValueError(f"Unknown fusion type: {fusion_type}")
         
@@ -307,6 +345,18 @@ class DualEncoderBackbone(Backbone):
                 
                 # Apply gated fusion
                 fused_feats[key] = gate * r_feat + (1 - gate) * d_feat
+        
+        elif self.fusion_type == 'windowed':
+            for key in self._out_features:
+                r_feat = rgb_feats[key]
+                d_feat = depth_feats[key]
+                
+                # Project depth to same dimension if needed
+                if f'{key}_depth_proj' in self.windowed_fusion:
+                    d_feat = self.windowed_fusion[f'{key}_depth_proj'](d_feat)
+                
+                # Apply windowed attention fusion
+                fused_feats[key] = self.windowed_fusion[key](r_feat, d_feat)
         
         return fused_feats
     

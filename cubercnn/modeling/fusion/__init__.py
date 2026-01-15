@@ -8,6 +8,10 @@ for domain-generalized 3D object detection.
 from .gated_fusion import GatedFusion
 from .depth_aware_fusion import DepthAwareAttentionFusion
 from .simple_fusion import ConcatFusion, AddFusion, AttentionFusion
+from .adaptive_multimae_fusion import (
+    AdaptiveMultiMAEFusion,
+    AdaptiveMultiMAEFusionFPN,
+)
 
 __all__ = [
     'GatedFusion', 
@@ -15,4 +19,6 @@ __all__ = [
     'ConcatFusion', 
     'AddFusion',
     'AttentionFusion',
+    'AdaptiveMultiMAEFusion',
+    'AdaptiveMultiMAEFusionFPN',
 ]

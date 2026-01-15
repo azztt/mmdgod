@@ -1,0 +1,54 @@
+# Step 5: Add Object Style Swap (Object-wise FSDR)
+#
+# Introduces object-level domain generalization through style transfer.
+# Swaps appearance of objects with same-category objects from reference pool
+# using histogram matching while preserving shape structure.
+#
+# Changes from 04_rgbd_fsdr:
+#   + Object Style Swap augmentation enabled
+#   + Category-indexed object pool for style transfer
+#   + Per-object histogram matching
+#
+# Command: python tools/train_rgbd.py --config-file configs/rgbd/progressive/05_rgbd_object_style_swap.yaml
+
+_BASE_: "../Base_RGBD.yaml"
+
+MODEL:
+  META_ARCHITECTURE: "RCNN3D_RGBD"
+  
+  USE_DUAL_ENCODER: True
+  
+  RGB_RESNET_DEPTH: 50
+  RGB_FREEZE_AT: 4
+  
+  DEPTH_RESNET_DEPTH: 50
+  DEPTH_FREEZE_AT: 2
+  
+  # Gated fusion
+  FUSION_TYPE: "gated"
+
+# Domain generalization augmentations
+DG:
+  ENABLED: True
+  
+  # Keep FSDR enabled
+  FSDR:
+    ENABLED: True
+    PROBABILITY: 0.5
+    VARIANT_BANDS: [[0, 2], [32, 64]]
+  
+  # Object-wise style transfer
+  OBJECT_STYLE_SWAP:
+    ENABLED: True
+    PROBABILITY: 0.3  # Per-object probability
+    BLEND_MODE: "alpha"  # 'replace', 'alpha'
+    ALPHA: 0.7
+    MIN_AREA: 100  # Minimum object area to consider
+    EXPAND_RATIO: 0.1  # Bbox expansion for extraction
+
+SOLVER:
+  IMS_PER_BATCH: 12
+  BASE_LR: 0.02
+  MAX_ITER: 60000
+
+OUTPUT_DIR: "./output/05_rgbd_object_style_swap"

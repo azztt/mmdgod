@@ -1,0 +1,39 @@
+# Hypersim → SUNRGBD Cross-Domain Transfer Configuration
+#
+# Training: Hypersim (synthetic indoor)
+# Evaluation: SUNRGBD (real indoor)
+#
+# This config applies the full DG stack for maximum domain transfer.
+# Use this for the main cross-domain generalization experiments.
+#
+# Command: python tools/train_rgbd.py --config-file configs/rgbd/progressive/hypersim_to_sunrgbd.yaml
+
+_BASE_: "06_rgbd_full_dg.yaml"
+
+# Dataset configuration
+DATASETS:
+  TRAIN: ("hypersim_train_rgbd",)
+  VAL: ("sunrgbd_val_rgbd",)
+  TEST: ("sunrgbd_test_rgbd",)
+
+# Dataset paths
+HYPERSIM:
+  ROOT: "/path/to/hypersim"
+  DEPTH_TYPE: "npy"  # .npy depth files
+  
+SUNRGBD:
+  ROOT: "/path/to/sunrgbd"
+  DEPTH_TYPE: "image"  # depth as image
+
+# Adjusted training for cross-domain
+SOLVER:
+  IMS_PER_BATCH: 8
+  BASE_LR: 0.01
+  MAX_ITER: 80000
+  STEPS: (60000, 70000)
+
+# More frequent evaluation for cross-domain monitoring
+TEST:
+  EVAL_PERIOD: 5000
+
+OUTPUT_DIR: "./output/hypersim_to_sunrgbd"
