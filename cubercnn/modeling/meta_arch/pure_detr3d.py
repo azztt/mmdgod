@@ -871,8 +871,12 @@ class PureDETR3D(nn.Module):
         class_probs = pred_probs[:, :-1]  # Remove background dimension
         scores, pred_classes = class_probs.max(-1)
         
-        # DEBUG: Check what scores we're getting (first batch only)
+        # DEBUG: Check what scores we're getting (first batch only) - use print for visibility
         if batch_idx == 0:
+            print(f"\n[INFERENCE DEBUG] Image {batch_idx}")
+            print(f"  Scores - max: {scores.max().item():.4f}, min: {scores.min().item():.4f}, "
+                  f"mean: {scores.mean().item():.4f}, median: {scores.median().item():.4f}")
+            print(f"  Num above threshold {self.test_score_thresh}: {(scores > self.test_score_thresh).sum().item()}/{len(scores)}")
             logger.info(f"[Inference] Scores - max: {scores.max().item():.4f}, min: {scores.min().item():.4f}, "
                        f"mean: {scores.mean().item():.4f}, median: {scores.median().item():.4f}")
             logger.info(f"[Inference] Num above threshold {self.test_score_thresh}: {(scores > self.test_score_thresh).sum().item()}/{len(scores)}")
@@ -885,6 +889,9 @@ class PureDETR3D(nn.Module):
         pred_depth = pred_depth[keep]
         pred_dims = pred_dims[keep]
         pred_pose = pred_pose[keep]
+        
+        if batch_idx == 0:
+            print(f"  After score filter: {len(scores)} boxes remaining")
         
         if len(scores) == 0:
             result = Instances(image_size)
@@ -954,6 +961,9 @@ class PureDETR3D(nn.Module):
         keep_nms = nms(pred_boxes, scores, self.test_nms_thresh)
         keep_nms = keep_nms[:self.test_topk]
         
+        if batch_idx == 0:
+            print(f"  After NMS: {len(keep_nms)} boxes remaining (topk={self.test_topk})")
+        
         result = Instances(image_size)
         result.pred_classes = pred_classes[keep_nms]
         result.scores = scores[keep_nms]
@@ -963,5 +973,11 @@ class PureDETR3D(nn.Module):
         result.pred_center_2D = pred_center2d_pixel[keep_nms]  # 2D center in pixels
         result.pred_dimensions = pred_dims_linear[keep_nms]
         result.pred_pose = pred_R[keep_nms]
+        
+        if batch_idx == 0:
+            print(f"  Final result: {len(result)} instances")
+            print(f"  Has pred_center_2D: {hasattr(result, 'pred_center_2D')}")
+            print(f"  Has pred_bbox3D: {hasattr(result, 'pred_bbox3D')}")
+            print(f"  Result fields: {[f for f in dir(result) if not f.startswith('_') and not callable(getattr(result, f))]}")
         
         return result

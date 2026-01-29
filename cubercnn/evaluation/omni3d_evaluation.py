@@ -972,8 +972,11 @@ def _evaluate_predictions_on_omni(
 def instances_to_coco_json(instances, img_id):
 
     num_instances = len(instances)
+    
+    print(f"\n[COCO JSON CONVERSION] img_id={img_id}, num_instances={num_instances}")
 
     if num_instances == 0:
+        print(f"  -> Returning empty list (0 instances)")
         return []
 
     boxes = BoxMode.convert(
@@ -981,6 +984,9 @@ def instances_to_coco_json(instances, img_id):
     ).tolist()
     scores = instances.scores.tolist()
     classes = instances.pred_classes.tolist()
+    
+    print(f"  Scores: {scores[:3]}..." if len(scores) > 3 else f"  Scores: {scores}")
+    print(f"  Classes: {classes[:3]}..." if len(classes) > 3 else f"  Classes: {classes}")
 
     # Check for all required 3D fields
     required_fields = ["pred_bbox3D", "pred_center_cam", "pred_center_2D", "pred_dimensions", "pred_pose"]
@@ -988,6 +994,8 @@ def instances_to_coco_json(instances, img_id):
     if missing_fields:
         import logging
         logger = logging.getLogger(__name__)
+        print(f"  [ERROR] Missing fields: {missing_fields}")
+        print(f"  [ERROR] Available fields: {[f for f in dir(instances) if not f.startswith('_')]}")
         logger.error(f"CRITICAL: Skipping {num_instances} predictions for img_id={img_id} due to missing fields: {missing_fields}")
         logger.error(f"Available fields: {[f for f in dir(instances) if not f.startswith('_')]}")
         return []
@@ -996,8 +1004,11 @@ def instances_to_coco_json(instances, img_id):
     if len(instances.pred_bbox3D) == 0:
         import logging
         logger = logging.getLogger(__name__)
+        print(f"  [ERROR] Empty pred_bbox3D despite {num_instances} instances")
         logger.warning(f"Empty pred_bbox3D for img_id={img_id} despite {num_instances} instances")
         return []
+    
+    print(f"  All required fields present, converting to COCO format...")
         
     bbox3D = instances.pred_bbox3D.tolist()
     center_cam = instances.pred_center_cam.tolist()
