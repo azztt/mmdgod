@@ -316,7 +316,9 @@ def visualize_from_instances(
         log_str: string describing what was visualized
     """
     os.makedirs(output_dir, exist_ok=True)
-    vis_dir = os.path.join(output_dir, 'visualizations', f'iter_{iteration:07d}')
+    # Handle iteration as string (e.g., 'final') or int
+    iter_str = f'iter_{iteration:07d}' if isinstance(iteration, int) else f'iter_{iteration}'
+    vis_dir = os.path.join(output_dir, 'visualizations', iter_str)
     os.makedirs(vis_dir, exist_ok=True)
     
     # Build category_id -> class_name mapping from dataset

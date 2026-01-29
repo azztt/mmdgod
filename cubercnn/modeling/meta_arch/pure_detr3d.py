@@ -613,7 +613,7 @@ class PureDETR3D(nn.Module):
             'loss_center2d': torch.tensor(0.0, device=device),
             'loss_depth': torch.tensor(0.0, device=device),
             'loss_dims': torch.tensor(0.0, device=device),
-            'loss_pose': torch.tensor(0.0, device=device),
+            'loss_yaw': torch.tensor(0.0, device=device),  # Renamed from loss_pose for yaw-only
             'loss_giou': torch.tensor(0.0, device=device),
             'loss_corners': torch.tensor(0.0, device=device),
         }
@@ -796,10 +796,10 @@ class PureDETR3D(nn.Module):
                 # Pose loss: extract yaw from rotation matrix if using yaw type
                 if self.pose_type == 'yaw':
                     gt_yaw = rotation_matrix_to_yaw(matched_gt_poses).unsqueeze(-1)  # (N, 1)
-                    losses['loss_pose'] += F.l1_loss(matched_pred_pose, gt_yaw)
+                    losses['loss_yaw'] += F.l1_loss(matched_pred_pose, gt_yaw)
                 else:
                     gt_pose_6d = matched_gt_poses[:, :, :2].reshape(-1, 6)
-                    losses['loss_pose'] += F.l1_loss(matched_pred_pose, gt_pose_6d)
+                    losses['loss_yaw'] += F.l1_loss(matched_pred_pose, gt_pose_6d)
                 
                 # Corner loss: use already computed 3D corners from above
                 losses['loss_corners'] += F.l1_loss(pred_corners_3d, gt_corners_3d)
@@ -813,7 +813,7 @@ class PureDETR3D(nn.Module):
         losses['loss_center2d'] *= self.loss_weights['center2d']
         losses['loss_depth'] *= self.loss_weights['depth']
         losses['loss_dims'] *= self.loss_weights['dims']
-        losses['loss_pose'] *= self.loss_weights['pose']
+        losses['loss_yaw'] *= self.loss_weights['pose']  # Still using 'pose' weight name in config
         losses['loss_giou'] *= self.loss_weights['giou']
         losses['loss_corners'] *= self.loss_weights['corners']
         

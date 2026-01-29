@@ -986,9 +986,19 @@ def instances_to_coco_json(instances, img_id):
     required_fields = ["pred_bbox3D", "pred_center_cam", "pred_center_2D", "pred_dimensions", "pred_pose"]
     missing_fields = [f for f in required_fields if not hasattr(instances, f)]
     if missing_fields:
-        import warnings
-        warnings.warn(f"Skipping {num_instances} predictions for img_id={img_id} due to missing fields: {missing_fields}")
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"CRITICAL: Skipping {num_instances} predictions for img_id={img_id} due to missing fields: {missing_fields}")
+        logger.error(f"Available fields: {[f for f in dir(instances) if not f.startswith('_')]}")
         return []
+    
+    # Additional check: verify fields are not empty tensors
+    if len(instances.pred_bbox3D) == 0:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Empty pred_bbox3D for img_id={img_id} despite {num_instances} instances")
+        return []
+        
     bbox3D = instances.pred_bbox3D.tolist()
     center_cam = instances.pred_center_cam.tolist()
     center_2D = instances.pred_center_2D.tolist()
