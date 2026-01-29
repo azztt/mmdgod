@@ -4,6 +4,13 @@ from typing import Any, Dict, List, Set
 from detectron2.solver.build import maybe_add_gradient_clipping
 
 def build_optimizer(cfg, model):
+    """
+    Build optimizer with support for:
+    - Different optimizers (SGD, Adam, AdamW)
+    - Per-parameter learning rates (backbone vs head)
+    - Weight decay exclusion for norms and biases
+    - Gradient clipping
+    """
     norm_module_types = (
         torch.nn.BatchNorm1d,
         torch.nn.BatchNorm2d,
@@ -16,9 +23,14 @@ def build_optimizer(cfg, model):
         torch.nn.LayerNorm,
         torch.nn.LocalResponseNorm,
     )
+    
+    # Get backbone multiplier (default 1.0 = same LR as head)
+    backbone_lr_multiplier = getattr(cfg.SOLVER, 'BACKBONE_MULTIPLIER', 1.0)
+    
     params: List[Dict[str, Any]] = []
     memo: Set[torch.nn.parameter.Parameter] = set()
-    for module in model.modules():
+    
+    for module_name, module in model.named_modules():
         for key, value in module.named_parameters(recurse=False):
             if not value.requires_grad:
                 continue
@@ -30,21 +42,35 @@ def build_optimizer(cfg, model):
             lr = cfg.SOLVER.BASE_LR
             weight_decay = cfg.SOLVER.WEIGHT_DECAY
 
+            # Apply backbone LR multiplier
+            # Backbone includes: rgb_backbone, depth_backbone, backbone (for single encoder)
+            is_backbone = any(bb in module_name for bb in ['rgb_backbone', 'depth_backbone', 'backbone.bottom_up'])
+            if is_backbone and backbone_lr_multiplier != 1.0:
+                lr = cfg.SOLVER.BASE_LR * backbone_lr_multiplier
+
+            # Norm layers: use WEIGHT_DECAY_NORM (typically 0)
             if isinstance(module, norm_module_types) and (cfg.SOLVER.WEIGHT_DECAY_NORM is not None):
                 weight_decay = cfg.SOLVER.WEIGHT_DECAY_NORM
             
+            # Bias parameters: optionally different LR and weight decay
             elif key == "bias":
                 if (cfg.SOLVER.BIAS_LR_FACTOR is not None):
-                    lr = cfg.SOLVER.BASE_LR * cfg.SOLVER.BIAS_LR_FACTOR
+                    lr = lr * cfg.SOLVER.BIAS_LR_FACTOR  # Scale from current lr, not base
                 if (cfg.SOLVER.WEIGHT_DECAY_BIAS is not None):
                     weight_decay = cfg.SOLVER.WEIGHT_DECAY_BIAS
 
-            # these params do not need weight decay at all
-            # TODO parameterize these in configs instead.
+            # Special parameters that should never have weight decay
             if key in ['priors_dims_per_cat', 'priors_z_scales', 'priors_z_stats']:
                 weight_decay = 0.0
 
             params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
+
+    # Log parameter group summary
+    backbone_params = sum(p["params"][0].numel() for p in params if p["lr"] < cfg.SOLVER.BASE_LR)
+    head_params = sum(p["params"][0].numel() for p in params if p["lr"] >= cfg.SOLVER.BASE_LR)
+    if backbone_lr_multiplier != 1.0:
+        print(f"[Optimizer] Backbone params: {backbone_params:,} (lr={cfg.SOLVER.BASE_LR * backbone_lr_multiplier:.6f})")
+        print(f"[Optimizer] Head params: {head_params:,} (lr={cfg.SOLVER.BASE_LR:.6f})")
 
     if cfg.SOLVER.TYPE == 'sgd':
         optimizer = torch.optim.SGD(

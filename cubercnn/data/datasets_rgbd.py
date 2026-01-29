@@ -57,7 +57,7 @@ def register_rgbd_datasets(cfg):
     
     # Register training datasets
     for dataset_name in cfg.DATASETS.TRAIN:
-        if not DatasetCatalog.contains(dataset_name):
+        if dataset_name not in DatasetCatalog:
             manifest_file = get_manifest_file_for_dataset(dataset_name, cfg)
             if manifest_file and os.path.exists(manifest_file):
                 register_single_rgbd_dataset(
@@ -69,7 +69,7 @@ def register_rgbd_datasets(cfg):
     
     # Register validation datasets
     for dataset_name in cfg.DATASETS.VAL:
-        if not DatasetCatalog.contains(dataset_name):
+        if dataset_name not in DatasetCatalog:
             manifest_file = get_manifest_file_for_dataset(dataset_name, cfg)
             if manifest_file and os.path.exists(manifest_file):
                 register_single_rgbd_dataset(
@@ -81,7 +81,7 @@ def register_rgbd_datasets(cfg):
     
     # Register test datasets  
     for dataset_name in cfg.DATASETS.TEST:
-        if not DatasetCatalog.contains(dataset_name):
+        if dataset_name not in DatasetCatalog:
             manifest_file = get_manifest_file_for_dataset(dataset_name, cfg)
             if manifest_file and os.path.exists(manifest_file):
                 register_single_rgbd_dataset(
@@ -109,20 +109,20 @@ def get_manifest_file_for_dataset(dataset_name: str, cfg) -> Optional[str]:
     """
     manifest_root = cfg.DATASETS.MANIFEST_ROOT
     
-    # Check if specific manifest files are provided in config
-    if hasattr(cfg.DATASETS, 'TRAIN_MANIFEST') and dataset_name in cfg.DATASETS.TRAIN:
+    # Check if specific manifest files are provided in config (and not empty)
+    if hasattr(cfg.DATASETS, 'TRAIN_MANIFEST') and cfg.DATASETS.TRAIN_MANIFEST and dataset_name in cfg.DATASETS.TRAIN:
         manifest_file = cfg.DATASETS.TRAIN_MANIFEST
         if not os.path.isabs(manifest_file):
             manifest_file = os.path.join(manifest_root, manifest_file)
         return manifest_file
         
-    if hasattr(cfg.DATASETS, 'VAL_MANIFEST') and dataset_name in cfg.DATASETS.VAL:
+    if hasattr(cfg.DATASETS, 'VAL_MANIFEST') and cfg.DATASETS.VAL_MANIFEST and dataset_name in cfg.DATASETS.VAL:
         manifest_file = cfg.DATASETS.VAL_MANIFEST
         if not os.path.isabs(manifest_file):
             manifest_file = os.path.join(manifest_root, manifest_file)
         return manifest_file
         
-    if hasattr(cfg.DATASETS, 'TEST_MANIFEST') and dataset_name in cfg.DATASETS.TEST:
+    if hasattr(cfg.DATASETS, 'TEST_MANIFEST') and cfg.DATASETS.TEST_MANIFEST and dataset_name in cfg.DATASETS.TEST:
         manifest_file = cfg.DATASETS.TEST_MANIFEST
         if not os.path.isabs(manifest_file):
             manifest_file = os.path.join(manifest_root, manifest_file)
@@ -175,6 +175,21 @@ def register_single_rgbd_dataset(
         filter_settings: Filtering settings for annotations
         filter_empty: Whether to filter out images without valid annotations
     """
+    # Pre-load category info from manifest for metadata
+    # This allows accessing metadata before the full dataset is loaded
+    try:
+        import json
+        with open(manifest_file, 'r') as f:
+            manifest = json.load(f)
+        categories = manifest.get('categories', [])
+        cat_ids = sorted([c['id'] for c in categories])
+        thing_classes = [c['name'] for c in sorted(categories, key=lambda x: x['id'])]
+        id_map = {cat_id: i for i, cat_id in enumerate(cat_ids)}
+    except Exception as e:
+        logger.warning(f"Could not pre-load categories from {manifest_file}: {e}")
+        thing_classes = []
+        id_map = {}
+    
     DatasetCatalog.register(
         dataset_name,
         lambda mf=manifest_file, dr=data_root, fs=filter_settings, fe=filter_empty: 
@@ -184,7 +199,9 @@ def register_single_rgbd_dataset(
     MetadataCatalog.get(dataset_name).set(
         json_file=manifest_file,
         image_root=data_root,
-        evaluator_type="coco"
+        evaluator_type="coco",
+        thing_classes=thing_classes,
+        thing_dataset_id_to_contiguous_id=id_map
     )
 
 
@@ -205,6 +222,9 @@ def load_rgbd_json(
     This extends the standard Omni3D loading to include depth_file_path
     and scene_type information for domain-generalized training.
     
+    IMPORTANT: If omni3d_model metadata is already set, we use its category
+    mapping to ensure consistency with the model's classifier indices.
+    
     Args:
         json_file: Path to manifest JSON
         image_root: Root directory for image files
@@ -224,23 +244,48 @@ def load_rgbd_json(
     if timer.seconds() > 1:
         logger.info(f"Loading {json_file} takes {timer.seconds():.2f} seconds.")
     
-    # Build category mapping
+    # Build category mapping from manifest
     cat_ids = sorted(coco_api.getCatIds())
     cats = coco_api.loadCats(cat_ids)
-    thing_classes = [c["name"] for c in sorted(cats, key=lambda x: x["id"])]
+    manifest_cat_id_to_name = {c["id"]: c["name"] for c in cats}
+    manifest_thing_classes = [c["name"] for c in sorted(cats, key=lambda x: x["id"])]
     
-    # Create ID mapping: category_id -> contiguous_id
-    id_map = {cat_id: i for i, cat_id in enumerate(cat_ids)}
+    # Check if global model metadata is already set (with config order)
+    # If so, use it for consistent category mapping
+    omni3d_meta = MetadataCatalog.get('omni3d_model')
+    if hasattr(omni3d_meta, 'thing_classes') and omni3d_meta.thing_classes:
+        # Use global model's category order (from config)
+        global_thing_classes = omni3d_meta.thing_classes
+        global_name_to_id = {name: i for i, name in enumerate(global_thing_classes)}
+        
+        # Map manifest category IDs to global contiguous IDs via category names
+        id_map = {}
+        for cat_id, cat_name in manifest_cat_id_to_name.items():
+            if cat_name in global_name_to_id:
+                id_map[cat_id] = global_name_to_id[cat_name]
+            else:
+                logger.debug(f"Category '{cat_name}' (id={cat_id}) not in global model categories")
+        
+        thing_classes = global_thing_classes
+        logger.info(f"Using global model metadata for category mapping ({len(id_map)} mappings)")
+    else:
+        # Fallback: create local mapping (legacy behavior)
+        thing_classes = manifest_thing_classes
+        id_map = {cat_id: i for i, cat_id in enumerate(cat_ids)}
     
-    # Set metadata
+    # Set metadata for this specific dataset
     meta = MetadataCatalog.get(dataset_name)
-    meta.thing_classes = thing_classes
-    meta.thing_dataset_id_to_contiguous_id = id_map
+    # Only set if not already set (from register_single_rgbd_dataset)
+    if not hasattr(meta, 'thing_classes') or not meta.thing_classes:
+        meta.thing_classes = thing_classes
+        meta.thing_dataset_id_to_contiguous_id = id_map
     
-    # Also set global model metadata if not exists
-    if not MetadataCatalog.get('omni3d_model').get('thing_classes'):
-        MetadataCatalog.get('omni3d_model').thing_classes = thing_classes
-        MetadataCatalog.get('omni3d_model').thing_dataset_id_to_contiguous_id = id_map
+    # Also set global model metadata if not exists or empty
+    omni3d_meta = MetadataCatalog.get('omni3d_model')
+    existing_classes = omni3d_meta.get('thing_classes', None)
+    if not existing_classes:  # None or empty list
+        omni3d_meta.thing_classes = thing_classes
+        omni3d_meta.thing_dataset_id_to_contiguous_id = id_map
     
     # Sort indices for reproducible results
     img_ids = sorted(coco_api.imgs.keys())
@@ -323,8 +368,17 @@ def load_rgbd_json(
             # Determine if annotation should be ignored
             ignore = is_ignore(anno, filter_settings, img_dict["height"])
             
+            # Skip ignored annotations entirely instead of setting category_id = -1
+            # This prevents issues with detectron2's histogram printing and loss computation
+            if ignore:
+                continue
+            
+            # Skip if category not in mapping
+            if annotation_category_id not in id_map:
+                continue
+            
             obj['iscrowd'] = False
-            obj['ignore'] = ignore
+            obj['ignore'] = False  # We've already filtered out ignored ones
             
             # Determine 2D bbox to use (prefer tight, then trunc, then proj)
             if filter_settings.get('modal_2D_boxes') and 'bbox2D_tight' in anno and anno['bbox2D_tight'][0] != -1:
@@ -342,16 +396,11 @@ def load_rgbd_json(
             if 'R_cam' in anno:
                 obj['pose'] = anno['R_cam']
             
-            # Set category_id: -1 for ignored, otherwise contiguous id
-            if ignore:
-                obj["category_id"] = -1
-            elif annotation_category_id in id_map:
-                obj["category_id"] = id_map[annotation_category_id]
-            else:
-                continue
+            # Set contiguous category_id
+            obj["category_id"] = id_map[annotation_category_id]
             
             objs.append(obj)
-            has_valid_annotation |= (not ignore)
+            has_valid_annotation = True
         
         if has_valid_annotation or (not filter_empty):
             record["annotations"] = objs
@@ -369,7 +418,8 @@ def load_rgbd_json(
 def register_and_store_rgbd_model_metadata(
     datasets: List[str],
     output_dir: str,
-    filter_settings: Optional[Dict[str, Any]] = None
+    filter_settings: Optional[Dict[str, Any]] = None,
+    category_names: Optional[List[str]] = None
 ):
     """
     Register model metadata for RGB-D training.
@@ -377,10 +427,16 @@ def register_and_store_rgbd_model_metadata(
     This creates/loads category metadata from all training datasets
     and stores it for consistent category handling during training.
     
+    IMPORTANT: If category_names is provided (from config CATEGORY_NAMES),
+    it will be used to define the canonical category order. This ensures
+    the model's classifier indices match the metadata indices.
+    
     Args:
         datasets: List of dataset names to get categories from
         output_dir: Directory to save/load metadata
         filter_settings: Optional filtering settings
+        category_names: List of category names in the order they should appear
+                       (typically from cfg.DATASETS.CATEGORY_NAMES)
     """
     output_file = os.path.join(output_dir, 'category_meta_rgbd.json')
     
@@ -390,18 +446,48 @@ def register_and_store_rgbd_model_metadata(
         id_map = metadata['thing_dataset_id_to_contiguous_id']
         id_map = {int(k): v for k, v in id_map.items()}
     else:
-        # Collect all categories from datasets
-        all_cats = {}
+        # Collect all categories from datasets with their original IDs
+        cat_id_to_name = {}
         
         for dataset_name in datasets:
             meta = MetadataCatalog.get(dataset_name)
-            if hasattr(meta, 'thing_classes'):
+            
+            # Try to get original category ID mapping
+            if hasattr(meta, 'thing_dataset_id_to_contiguous_id'):
+                ds_id_map = meta.thing_dataset_id_to_contiguous_id
+                if hasattr(meta, 'thing_classes'):
+                    # Map original IDs to names
+                    for orig_id, cont_id in ds_id_map.items():
+                        if cont_id < len(meta.thing_classes):
+                            cat_name = meta.thing_classes[cont_id]
+                            cat_id_to_name[orig_id] = cat_name
+            elif hasattr(meta, 'thing_classes'):
+                # Fallback: assume sequential IDs
                 for i, cat_name in enumerate(meta.thing_classes):
-                    if cat_name not in all_cats:
-                        all_cats[cat_name] = len(all_cats)
+                    if i not in cat_id_to_name:
+                        cat_id_to_name[i] = cat_name
         
-        thing_classes = sorted(all_cats.keys())
-        id_map = {i: i for i in range(len(thing_classes))}
+        # Build contiguous mapping using config order if provided
+        if category_names:
+            # Use the config-defined order (CRITICAL for matching model classifier)
+            thing_classes = list(category_names)
+            cat_name_to_contiguous = {name: i for i, name in enumerate(thing_classes)}
+            logger.info(f"Using config-defined category order: {thing_classes[:5]}...")
+        else:
+            # Fallback: alphabetical order (NOT recommended - may cause mismatch)
+            logger.warning("No category_names provided! Using alphabetical order - "
+                          "this may cause mismatch with model classifier!")
+            unique_names = sorted(set(cat_id_to_name.values()))
+            thing_classes = unique_names
+            cat_name_to_contiguous = {name: i for i, name in enumerate(unique_names)}
+        
+        # Map original IDs to contiguous IDs
+        id_map = {}
+        for orig_id, cat_name in cat_id_to_name.items():
+            if cat_name in cat_name_to_contiguous:
+                id_map[orig_id] = cat_name_to_contiguous[cat_name]
+            else:
+                logger.warning(f"Category '{cat_name}' (id={orig_id}) not in category_names, skipping")
         
         os.makedirs(output_dir, exist_ok=True)
         util.save_json(output_file, {
@@ -412,7 +498,7 @@ def register_and_store_rgbd_model_metadata(
     MetadataCatalog.get('omni3d_model').thing_classes = thing_classes
     MetadataCatalog.get('omni3d_model').thing_dataset_id_to_contiguous_id = id_map
     
-    logger.info(f"Model metadata: {len(thing_classes)} categories")
+    logger.info(f"Model metadata: {len(thing_classes)} categories, {len(id_map)} ID mappings")
 
 
 # =============================================================================
@@ -431,7 +517,7 @@ def register_hypersim_rgbd(cfg):
     ]
     
     for name, manifest, filter_empty in datasets_to_register:
-        if not DatasetCatalog.contains(name):
+        if name not in DatasetCatalog:
             manifest_path = os.path.join(manifest_root, manifest)
             if os.path.exists(manifest_path):
                 register_single_rgbd_dataset(name, manifest_path, data_root, filter_settings, filter_empty)
@@ -449,7 +535,7 @@ def register_sunrgbd_rgbd(cfg):
     ]
     
     for name, manifest, filter_empty in datasets_to_register:
-        if not DatasetCatalog.contains(name):
+        if name not in DatasetCatalog:
             manifest_path = os.path.join(manifest_root, manifest)
             if os.path.exists(manifest_path):
                 register_single_rgbd_dataset(name, manifest_path, data_root, filter_settings, filter_empty)
@@ -477,7 +563,7 @@ def register_all_rgbd_datasets(cfg):
     ]
     
     for name, manifest, filter_empty in additional_datasets:
-        if not DatasetCatalog.contains(name):
+        if name not in DatasetCatalog:
             manifest_path = os.path.join(manifest_root, manifest)
             if os.path.exists(manifest_path):
                 register_single_rgbd_dataset(name, manifest_path, data_root, filter_settings, filter_empty)

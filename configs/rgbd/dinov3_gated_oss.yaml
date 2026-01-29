@@ -1,0 +1,20 @@
+# =============================================================================
+# DINOv3 + Gated Fusion + Object Style Swap
+# =============================================================================
+# Progressive config: base_aug + gated fusion + Object Style Swap
+#
+# Object Style Swap augments training by swapping object appearances between
+# different instances, helping the model learn geometry-invariant features.
+# =============================================================================
+
+_BASE_: "dinov3_gated_fusion.yaml"
+
+# Enable Domain Generalization
+DG:
+  ENABLED: True
+  
+  # Object Style Swap
+  OBJECT_STYLE_SWAP:
+    ENABLED: True
+
+OUTPUT_DIR: "./output/dinov3_gated_oss"

@@ -305,6 +305,11 @@ class Omni3DEvaluationHelper:
 
         results = self.results[dataset_name]
 
+        # Handle case where no predictions were made (empty results)
+        if results is None or 'log_str_2D' not in results:
+            logger.warning(f"No evaluation results for {dataset_name} at iter={self.iter_label} - model produced 0 detections")
+            return self
+
         logger.info('\n'+results['log_str_2D'].replace('mode=2D', '{} iter={} mode=2D'.format(dataset_name, self.iter_label)))
             
         # store the partially accumulated evaluations per category per area
@@ -390,11 +395,18 @@ class Omni3DEvaluationHelper:
 
         thing_classes = MetadataCatalog.get('omni3d_model').thing_classes
         catId2contiguous = MetadataCatalog.get('omni3d_model').thing_dataset_id_to_contiguous_id
-        ordered_things = [thing_classes[catId2contiguous[cid]] for cid in self.overall_catIds]
+        
+        # Filter to only categories that exist in the training set (i.e., in catId2contiguous)
+        valid_catIds = [cid for cid in self.overall_catIds if cid in catId2contiguous]
+        if len(valid_catIds) < len(self.overall_catIds):
+            skipped = len(self.overall_catIds) - len(valid_catIds)
+            logger.info(f"Skipping {skipped} categories not in training set for evaluation")
+        
+        ordered_things = [thing_classes[catId2contiguous[cid]] for cid in valid_catIds]
         categories = set(ordered_things)
 
         evaluator2D = Omni3Deval(mode='2D')
-        evaluator2D.params.catIds = list(self.overall_catIds)
+        evaluator2D.params.catIds = list(valid_catIds)  # Use only valid categories
         evaluator2D.params.imgIds = list(self.overall_imgIds)
         evaluator2D.evalImgs = True
         evaluator2D.evals_per_cat_area = self.evals_per_cat_area2D
@@ -420,7 +432,7 @@ class Omni3DEvaluationHelper:
             results2D.update({"AP-" + "{}".format(name): float(ap * 100)})
 
         evaluator3D = Omni3Deval(mode='3D')
-        evaluator3D.params.catIds = list(self.overall_catIds)
+        evaluator3D.params.catIds = list(valid_catIds)  # Use only valid categories
         evaluator3D.params.imgIds = list(self.overall_imgIds)
         evaluator3D.evalImgs = True
         evaluator3D.evals_per_cat_area = self.evals_per_cat_area3D
@@ -470,38 +482,9 @@ class Omni3DEvaluationHelper:
             "AP3D-N": extras_APn, "AP3D-M": extras_APm, "AP3D-F": extras_APf
         }
 
-        # Omni3D Outdoor performance
-        omni_2D, omni_3D = (np.nan,) * 2
-
-        omni3d_outdoor_categories = get_omni3d_categories("omni3d_out")
-        if len(omni3d_outdoor_categories - categories) == 0:
-            omni_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in omni3d_outdoor_categories])
-            if not self.only_2d:
-                omni_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in omni3d_outdoor_categories])
-
-        self.results_omni3d["Omni3D_Out"] = {"iters": self.iter_label, "AP2D": omni_2D, "AP3D": omni_3D}
-
-        # Omni3D Indoor performance
-        omni_2D, omni_3D = (np.nan,) * 2
-
-        omni3d_indoor_categories = get_omni3d_categories("omni3d_in")
-        if len(omni3d_indoor_categories - categories) == 0:
-            omni_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in omni3d_indoor_categories])
-            if not self.only_2d:
-                omni_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in omni3d_indoor_categories])
-
-        self.results_omni3d["Omni3D_In"] = {"iters": self.iter_label, "AP2D": omni_2D, "AP3D": omni_3D}
-
-        # Omni3D performance
-        omni_2D, omni_3D = (np.nan,) * 2
-
-        omni3d_categories = get_omni3d_categories("omni3d")
-        if len(omni3d_categories - categories) == 0:
-            omni_2D = np.mean([results2D['AP-{}'.format(cat)] for cat in omni3d_categories])
-            if not self.only_2d:
-                omni_3D = np.mean([results3D['AP-{}'.format(cat)] for cat in omni3d_categories])
-
-        self.results_omni3d["Omni3D"] = {"iters": self.iter_label, "AP2D": omni_2D, "AP3D": omni_3D}
+        # NOTE: Omni3D benchmark aggregates (Omni3D_Out, Omni3D_In, Omni3D) are skipped
+        # since they only apply to the original Omni3D benchmark categories.
+        # For custom datasets (Hypersim, SUNRGBD, etc.), these would always be NaN.
 
         # Per-category performance for the cumulative datasets
         results_cat = OrderedDict()
@@ -516,7 +499,8 @@ class Omni3DEvaluationHelper:
         
         utils_logperf.print_ap_category_histogram("<Concat>", results_cat)
         utils_logperf.print_ap_analysis_histogram(self.results_analysis)
-        utils_logperf.print_ap_omni_histogram(self.results_omni3d)
+        # Skip Omni3D benchmark table since it's not applicable for custom datasets
+        # utils_logperf.print_ap_omni_histogram(self.results_omni3d)
 
 
 def inference_on_dataset(model, data_loader):
@@ -865,20 +849,38 @@ class Omni3DEvaluator(COCOEvaluator):
                 and max(all_contiguous_ids) == num_classes - 1
             )
 
-            reverse_id_mapping = {v: k for k, v in dataset_id_to_contiguous_id.items()}
+            # BUG FIX: Use category NAME to map predictions to dataset IDs
+            # The model outputs contiguous IDs based on omni3d_model.thing_classes
+            # We need to map: model_contiguous_id -> category_name -> dataset_original_id
+            # Previously used dataset's id_map which has DIFFERENT contiguous IDs!
+            
+            # Build name -> dataset_original_id mapping
+            dataset_name_to_orig_id = {}
+            for orig_id, cont_id in dataset_id_to_contiguous_id.items():
+                if cont_id < len(self._metadata.thing_classes):
+                    cat_name = self._metadata.thing_classes[cont_id]
+                    dataset_name_to_orig_id[cat_name] = orig_id
+            
+            num_global_classes = len(omni3d_global_categories)
             for result in omni_results:
                 category_id = result["category_id"]
-                assert category_id < num_classes, (
-                    f"A prediction has class={category_id}, "
-                    f"but the dataset only has {num_classes} classes and "
-                    f"predicted class id should be in [0, {num_classes - 1}]."
-                )
-                result["category_id"] = reverse_id_mapping[category_id]
-
+                
+                # Skip predictions for classes outside the global model vocabulary
+                if category_id >= num_global_classes:
+                    continue
+                
                 cat_name = omni3d_global_categories[category_id]
 
-                if cat_name in self._metadata.thing_classes:
-                    dataset_results.append(result)
+                # Skip predictions for classes not in the dataset's vocabulary
+                if cat_name not in self._metadata.thing_classes:
+                    continue
+                
+                # Map through category name to get correct dataset ID
+                if cat_name not in dataset_name_to_orig_id:
+                    continue
+                    
+                result["category_id"] = dataset_name_to_orig_id[cat_name]
+                dataset_results.append(result)
 
         # replace the results with the filtered
         # instances that are in vocabulary. 
@@ -902,17 +904,17 @@ class Omni3DEvaluator(COCOEvaluator):
         )
         for task in sorted(tasks):
             assert task in {"bbox"}, f"Got unknown task: {task}!"
-            evals, log_strs = (
-                _evaluate_predictions_on_omni(
-                    self._omni_api,
-                    omni_results,
-                    task,
-                    img_ids=img_ids,
-                    only_2d=self._only_2d,
-                    eval_prox=self._eval_prox,
-                )
-                if len(omni_results) > 0
-                else None  # cocoapi does not handle empty results very well
+            if len(omni_results) == 0:
+                # cocoapi does not handle empty results very well
+                self._logger.warning("No predictions to evaluate - model produced 0 detections")
+                return
+            evals, log_strs = _evaluate_predictions_on_omni(
+                self._omni_api,
+                omni_results,
+                task,
+                img_ids=img_ids,
+                only_2d=self._only_2d,
+                eval_prox=self._eval_prox,
             )
 
             modes = evals.keys()
@@ -980,19 +982,18 @@ def instances_to_coco_json(instances, img_id):
     scores = instances.scores.tolist()
     classes = instances.pred_classes.tolist()
 
-    if hasattr(instances, "pred_bbox3D"):
-        bbox3D = instances.pred_bbox3D.tolist()
-        center_cam = instances.pred_center_cam.tolist()
-        center_2D = instances.pred_center_2D.tolist()
-        dimensions = instances.pred_dimensions.tolist()
-        pose = instances.pred_pose.tolist()
-    else:
-        # dummy
-        bbox3D = np.ones([num_instances, 8, 3]).tolist()
-        center_cam = np.ones([num_instances, 3]).tolist()
-        center_2D = np.ones([num_instances, 2]).tolist()
-        dimensions = np.ones([num_instances, 3]).tolist()
-        pose = np.ones([num_instances, 3, 3]).tolist()
+    # Check for all required 3D fields
+    required_fields = ["pred_bbox3D", "pred_center_cam", "pred_center_2D", "pred_dimensions", "pred_pose"]
+    missing_fields = [f for f in required_fields if not hasattr(instances, f)]
+    if missing_fields:
+        import warnings
+        warnings.warn(f"Skipping {num_instances} predictions for img_id={img_id} due to missing fields: {missing_fields}")
+        return []
+    bbox3D = instances.pred_bbox3D.tolist()
+    center_cam = instances.pred_center_cam.tolist()
+    center_2D = instances.pred_center_2D.tolist()
+    dimensions = instances.pred_dimensions.tolist()
+    pose = instances.pred_pose.tolist()
 
     results = []
     for k in range(num_instances):
@@ -1230,6 +1231,9 @@ class Omni3Deval(COCOeval):
                 Na = a0*I0
 
                 if has_precomputed_evals:
+                    # Handle missing keys - category may not have instances in test set
+                    if (catId, a) not in evals_per_cat_area:
+                        continue
                     E = evals_per_cat_area[(catId, a)]
 
                 else:
@@ -1260,8 +1264,8 @@ class Omni3Deval(COCOeval):
                     tps = np.logical_and(               dtm,  np.logical_not(dtIg) )
                     fps = np.logical_and(np.logical_not(dtm), np.logical_not(dtIg) )
 
-                    tp_sum = np.cumsum(tps, axis=1).astype(dtype=np.float)
-                    fp_sum = np.cumsum(fps, axis=1).astype(dtype=np.float)
+                    tp_sum = np.cumsum(tps, axis=1).astype(dtype=np.float64)
+                    fp_sum = np.cumsum(fps, axis=1).astype(dtype=np.float64)
 
                     for t, (tp, fp) in enumerate(zip(tp_sum, fp_sum)):
                         tp = np.array(tp)

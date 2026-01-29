@@ -1,0 +1,28 @@
+# =============================================================================
+# DINOv3 + Gated Fusion + Object Style Swap + FSDR
+# =============================================================================
+# Progressive config: base_aug + gated fusion + OSS + FSDR
+#
+# Combines both domain randomization techniques:
+# - FSDR: Frequency-domain augmentation for domain invariance
+# - OSS: Object-level style swap for appearance invariance
+# =============================================================================
+
+_BASE_: "dinov3_gated_fusion.yaml"
+
+# Enable Domain Generalization with both techniques
+DG:
+  ENABLED: True
+  
+  # Frequency Space Domain Randomization
+  FSDR:
+    ENABLED: True
+    PROBABILITY: 0.5
+    VARIANT_BANDS: [[0, 2], [32, 64]]
+    BLOCK_SIZE: 64
+  
+  # Object Style Swap
+  OBJECT_STYLE_SWAP:
+    ENABLED: True
+
+OUTPUT_DIR: "./output/dinov3_gated_oss_fsdr"

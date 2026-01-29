@@ -40,6 +40,16 @@ def get_omni3d_categories(dataset="omni3d"):
     elif dataset in ["nuScenes_train", "nuScenes_val", "nuScenes_test"]:
         cats = set({'pedestrian', 'car', 'truck', 'traffic cone', 'barrier', 'motorcycle', 'bicycle', 'bus', 'trailer'})
         assert len(cats) == 9
+    # RGBD datasets
+    elif dataset in ["hypersim_train_rgbd", "hypersim_val_rgbd", "hypersim_test_rgbd"]:
+        cats = set({'person', 'books', 'chair', 'towel', 'blinds', 'window', 'lamp', 'shelves', 'mirror', 'sink', 'cabinet', 'bathtub', 'door', 'toilet', 'desk', 'box', 'bookcase', 'picture', 'table', 'counter', 'bed', 'night stand', 'dresser', 'pillow', 'sofa', 'television', 'floor mat', 'curtain', 'clothes', 'stationery', 'refrigerator'})
+    elif dataset in ["sunrgbd_train_rgbd", "sunrgbd_val_rgbd", "sunrgbd_test_rgbd"]:
+        cats = set({'person', 'books', 'chair', 'towel', 'blinds', 'window', 'lamp', 'shelves', 'mirror', 'sink', 'cabinet', 'bathtub', 'door', 'toilet', 'desk', 'box', 'bookcase', 'picture', 'table', 'counter', 'bed', 'night stand', 'dresser', 'pillow', 'sofa', 'television', 'floor mat', 'curtain', 'clothes', 'stationery', 'refrigerator'})
+    elif dataset in ["multiscan_val_rgbd", "scannetpp_val_rgbd"]:
+        cats = set({'person', 'books', 'chair', 'towel', 'blinds', 'window', 'lamp', 'shelves', 'mirror', 'sink', 'cabinet', 'bathtub', 'door', 'toilet', 'desk', 'box', 'bookcase', 'picture', 'table', 'counter', 'bed', 'night stand', 'dresser', 'pillow', 'sofa', 'television', 'floor mat', 'curtain', 'clothes', 'stationery', 'refrigerator'})
+    elif "_rgbd" in dataset:
+        # Fallback for any other RGBD dataset - use all indoor categories
+        cats = set({'person', 'books', 'chair', 'towel', 'blinds', 'window', 'lamp', 'shelves', 'mirror', 'sink', 'cabinet', 'bathtub', 'door', 'toilet', 'desk', 'box', 'bookcase', 'picture', 'table', 'counter', 'bed', 'night stand', 'dresser', 'pillow', 'sofa', 'television', 'floor mat', 'curtain', 'clothes', 'stationery', 'refrigerator'})
     else:
         raise ValueError("%s dataset is not registered." % (dataset))
 

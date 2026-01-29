@@ -1,159 +1,168 @@
 # Base configuration for RGB-D domain-generalized 3D detection
-# This config file sets up the dual encoder backbone and RGB-D data loading
+# Uses Pure DETR3D architecture with learnable queries (no RPN)
 
 _BASE_: "../Base.yaml"
 
-# RGB-D specific model settings
+# Override model to use Pure DETR3D architecture
 MODEL:
-  META_ARCHITECTURE: "RCNN3D_RGBD"
+  META_ARCHITECTURE: "PureDETR3D"
   
-  # Enable dual encoder for RGB and depth
-  USE_DUAL_ENCODER: True
+  # ---------------------------
+  # DINOv3 Backbone Settings
+  # ---------------------------
+  BACKBONE:
+    NAME: "build_dino_dual_encoder"
+    DINO_MODEL: "dinov3-vitb16"  # Base model (768 dim, patch_size=16)
+    RGB_FREEZE_ALL: False  # Train RGB encoder
+    DEPTH_NUM_FROZEN_BLOCKS: 2  # Only freeze first 2 blocks
+    FUSION_TYPE: "concat"
+    OUT_CHANNELS: 256
   
-  # RGB encoder settings (fully frozen for domain-invariant features)
-  # dgmmod: frozen=True, frozen_stages=4 (all stages frozen)
-  RGB_RESNET_DEPTH: 50
-  RGB_FROZEN: True
-  RGB_FROZEN_STAGES: 4  # Freeze stages 0-4 (conv1, layer1-4)
+  # Pixel normalization for DINO (ImageNet stats)
+  PIXEL_MEAN: [123.675, 116.28, 103.53]
+  PIXEL_STD: [58.395, 57.12, 57.375]
   
-  # Depth encoder settings (partially frozen to adapt to depth modality)
-  # dgmmod: frozen=False, frozen_stages=2 (layer3-4 trainable)
-  DEPTH_RESNET_DEPTH: 50
-  DEPTH_FROZEN: False
-  DEPTH_FROZEN_STAGES: 2  # Freeze stages 0-2, train layer3-4
-  
-  # Fusion type: 'concat', 'add', 'gated'
-  FUSION_TYPE: "concat"
-  
-  # Depth normalization (depth maps are assumed to be in [-1, 1])
+  # Depth normalization
   DEPTH_PIXEL_MEAN: 0.0
   DEPTH_PIXEL_STD: 1.0
+  DEPTH_MAX: 20.0
   
-  # Standard pixel normalization for RGB
-  PIXEL_MEAN: [103.530, 116.280, 123.675]
-  PIXEL_STD: [57.375, 57.120, 58.395]
-  
-  # FPN settings
-  FPN:
-    IN_FEATURES: ["res2", "res3", "res4", "res5"]
-    OUT_CHANNELS: 256
-    NORM: "GN"
-    FUSE_TYPE: "sum"
-  
-  # RPN settings
-  RPN:
-    IN_FEATURES: ["p2", "p3", "p4", "p5", "p6"]
-    PRE_NMS_TOPK_TRAIN: 2000
-    PRE_NMS_TOPK_TEST: 1000
-    POST_NMS_TOPK_TRAIN: 1000
-    POST_NMS_TOPK_TEST: 1000
-  
-  # ROI settings for 3D detection
+  # ROI heads (just for NUM_CLASSES)
   ROI_HEADS:
-    NAME: "ROIHeads3D"
-    IN_FEATURES: ["p2", "p3", "p4", "p5"]
-    IOU_THRESHOLDS: [0.3, 0.5]
-    
-  ROI_BOX_HEAD:
-    NAME: "CubeHead"
-    POOLER_TYPE: "ROIAlignV2"
-    POOLER_RESOLUTION: 7
-    POOLER_SAMPLING_RATIO: 0
-    
-  # Cube head specific settings
+    NUM_CLASSES: 31  # Hypersim categories
+  
+  # ---------------------------
+  # Pure DETR3D Decoder Settings
+  # ---------------------------
   ROI_CUBE_HEAD:
-    USE_CONFIDENCE: True
-    CLUSTER_BINS: 1
-    Z_TYPE: "direct"
+    # DETR decoder architecture
+    FEATURE_DIM: 256
+    NUM_QUERIES: 100        # Learnable object queries
+    NUM_DECODER_LAYERS: 6   # Transformer decoder layers
+    NUM_HEADS: 8
+    DIM_FEEDFORWARD: 1024
+    DROPOUT: 0.1
+    
+    # 3D detection settings
     POSE_TYPE: "6d"
-    DIMS_PRIORS_ENABLED: True
+    Z_TYPE: "direct"
     VIRTUAL_DEPTH: True
     VIRTUAL_FOCAL: 512.0
-    DISENTANGLED_LOSS: True
+    ALLOCENTRIC_POSE: True
+    
+    # Loss weights
+    LOSS_W_CLS: 2.0
+    LOSS_W_XY: 1.0
+    LOSS_W_Z: 1.0
+    LOSS_W_DIMS: 1.0
+    LOSS_W_POSE: 1.0
+    LOSS_W_JOINT: 0.25
+    
+    # Test/Inference settings
+    TEST_SCORE_THRESH: 0.05
+    TEST_NMS_THRESH: 0.5
+    TEST_TOPK_PER_IMAGE: 100
 
-# Input settings
-# Match ovdgmmod/dgmmod: max 512 in any dimension
+# Input settings - match Omni3D multi-scale training
 INPUT:
-  FORMAT: "BGR"
-  MIN_SIZE_TRAIN: (384, 416, 448, 480, 512)
-  MAX_SIZE_TRAIN: 512
+  MIN_SIZE_TRAIN: (256, 288, 320, 352, 384, 416, 448, 480, 512)
   MIN_SIZE_TEST: 512
   MAX_SIZE_TEST: 512
 
-# Solver settings
 # =============================================================================
-# Omni3D Scaling Rules (from README):
-# Base indoor config: IMS_PER_BATCH=128, BASE_LR=0.08, MAX_ITER=116000
-# Scale factor r = base_batch / actual_batch = 128 / 16 = 8
-# - BASE_LR /= r  -> 0.08 / 8 = 0.01
-# - MAX_ITER *= r -> 116000 * 8 = 928000 (capped for practical training)
-# - STEPS *= r    -> (69600*8, 92800*8) = (556800, 742400)
-# - WARMUP_ITERS *= r -> 3625 * 8 = 29000
-# - EVAL_PERIOD *= r  -> 29000 * 8 = 232000 (adjusted for practical eval)
-# - VIS_PERIOD *= r   -> 2320 * 8 = 18560
-#
-# Note: For dual encoder with 4 GPUs, we use batch=16 (4/GPU) as practical target
-# Adjust MAX_ITER down to ~200k for reasonable training time
+# SOLVER CONFIGURATION
+# Optimized for: TransformerDecoder3DHead + Dual ResNet50 (fully trainable)
+# Total trainable params: ~82M
 # =============================================================================
 SOLVER:
-  TYPE: "sgd"
-  IMS_PER_BATCH: 16  # 4 images per GPU × 4 GPUs
-  BASE_LR: 0.01      # 0.08 / 8 (scale factor r=8)
-  STEPS: (120000, 160000)  # Scaled and adjusted for ~200k iters
-  MAX_ITER: 200000   # Adjusted from 928k for practical training
-  WARMUP_ITERS: 5000 # ~2.5% of max_iter (standard warmup)
+  # Optimizer: AdamW is standard for transformers, better than SGD
+  TYPE: "adamw"
+  
+  # Batch size: 128 total (32 per GPU x 4 GPUs)
+  # Effective batch size matters for learning rate scaling
+  IMS_PER_BATCH: 64
+  
+  # Learning rate: Linear scaling rule from batch 16 baseline
+  # AdamW typically uses 10x lower LR than SGD
+  # Base: 1e-4 for batch 16 → 8e-4 for batch 128
+  BASE_LR: 0.0004
+  
+  # Backbone LR multiplier: Train backbone slower than head
+  # Prevents destroying pretrained features too quickly
+  BACKBONE_MULTIPLIER: 0.1
+  
+  # Weight decay: Higher for transformers to prevent overfitting
+  # AdamW decouples weight decay from gradient update
+  WEIGHT_DECAY: 0.05
+  
+  # Bias and norm parameters should not have weight decay
+  WEIGHT_DECAY_NORM: 0.0
+  
+  # LR Schedule: Cosine annealing (better than step for transformers)
+  LR_SCHEDULER_NAME: "WarmupCosineLR"
+  
+  # Training iterations
+  # 52k images, batch 128 → ~406 iters/epoch
+  # 50 epochs = ~20k iters, 100 epochs = ~40k iters
+  MAX_ITER: 40000
+  
+  # Warmup: Critical for transformer stability
+  # 5 epochs warmup = ~2000 iters
+  WARMUP_ITERS: 2000
   WARMUP_FACTOR: 0.001
-  WEIGHT_DECAY: 0.0001
-  MOMENTUM: 0.9
+  WARMUP_METHOD: "linear"
+  
+  # Gradient clipping: Essential for transformer training stability
   CLIP_GRADIENTS:
     ENABLED: True
     CLIP_TYPE: "norm"
-    CLIP_VALUE: 10.0
+    CLIP_VALUE: 1.0
     NORM_TYPE: 2.0
+  
+  # Checkpointing
+  CHECKPOINT_PERIOD: 4000  # Every ~10 epochs
+  
+  # AMP: Mixed precision for memory efficiency and speed
+  AMP:
+    ENABLED: True
 
-# Testing
+# =============================================================================
+# TEST CONFIGURATION
+# =============================================================================
 TEST:
-  EVAL_PERIOD: 20000  # Evaluate every 20k iters
+  EVAL_PERIOD: 4000   # Evaluate every ~10 epochs
+  
+  # Increase test-time proposals for better recall
   DETECTIONS_PER_IMAGE: 100
 
 VIS_PERIOD: 2000
 
-# Domain generalization augmentations
+# =============================================================================
+# DATALOADER CONFIGURATION
+# =============================================================================
 DATALOADER:
-  NUM_WORKERS: 4
-  SAMPLER_TRAIN: "TrainingSampler"
+  NUM_WORKERS: 8  # 2 workers per GPU x 4 GPUs
+  
+  # RepeatFactor sampler: Oversample rare categories
+  SAMPLER_TRAIN: "RepeatFactorTrainingSampler"
+  REPEAT_THRESHOLD: 0.1
+  
+  # Aspect ratio grouping: Batch images with similar aspect ratios
+  # Reduces padding waste, improves training efficiency
+  ASPECT_RATIO_GROUPING: True
+  
+  # Filter empty annotations to avoid wasted compute
+  FILTER_EMPTY_ANNOTATIONS: True
 
-# =============================================================================
 # Dataset Configuration
-# =============================================================================
-# Data root: /mnt/data/users/anweshan/omni3d/data
-# Manifests: /mnt/data/users/anweshan/omni3d/data/unidet3d_format/cleaned_manifests
-#
-# Manifest format (COCO-style):
-#   - images: [{file_path, depth_file_path, K, width, height, scene_type, ...}]
-#   - annotations: [{image_id, category_id, bbox_3d, ...}]
-#   - categories: [{id, name}]
-# =============================================================================
 DATASETS:
-  # Root directory for all datasets (file_path in manifests are relative to this)
+  CATEGORY_NAMES: ('person', 'books', 'chair', 'towel', 'blinds', 'window', 'lamp', 'shelves', 'mirror', 'sink', 'cabinet', 'bathtub', 'door', 'toilet', 'desk', 'box', 'bookcase', 'picture', 'table', 'counter', 'bed', 'night stand', 'dresser', 'pillow', 'sofa', 'television', 'floor mat', 'curtain', 'clothes', 'stationery', 'refrigerator')
   DATA_ROOT: "/mnt/data/users/anweshan/omni3d/data"
-  
-  # Manifest directory
   MANIFEST_ROOT: "/mnt/data/users/anweshan/omni3d/data/unidet3d_format/cleaned_manifests"
-  
-  # Available manifests:
-  # - hypersim_train_filtered.json (52461 images, 1908579 annotations, 31 categories)
-  # - hypersim_val_filtered.json
-  # - sunrgbd_val_filtered.json
-  # - multiscan_val_filtered.json
-  # - scannetpp_val_filtered.json
-  
-  # Training datasets
   TRAIN: ("hypersim_train_rgbd",)
-  
-  # Validation/Test datasets  
-  VAL: ("hypersim_val_rgbd",)
-  TEST: ("sunrgbd_val_rgbd",)
+  TRAIN_MANIFEST: "hypersim_train_filtered.json"  # Full training dataset (52k images)
+  # TRAIN_MANIFEST: "hypersim_train_sampled.json"  # Sampled for debugging (500 images)
+  # VAL: ("hypersim_val_rgbd",)
+  TEST: ("hypersim_val_rgbd","sunrgbd_val_rgbd","multiscan_val_rgbd","scannetpp_val_rgbd",)
 
-# Output directory
-OUTPUT_DIR: "./output/rgbd_training"
+OUTPUT_DIR: "./output/rgbd_base"

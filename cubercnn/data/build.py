@@ -123,6 +123,10 @@ def _train_loader_from_config(cfg, mapper=None, *, dataset=None, sampler=None, d
         "total_batch_size": cfg.SOLVER.IMS_PER_BATCH,
         "aspect_ratio_grouping": cfg.DATALOADER.ASPECT_RATIO_GROUPING,
         "num_workers": cfg.DATALOADER.NUM_WORKERS,
+        # Prefetching and persistent workers for faster data loading
+        "prefetch_factor": getattr(cfg.DATALOADER, 'PREFETCH_FACTOR', 4),
+        "persistent_workers": getattr(cfg.DATALOADER, 'PERSISTENT_WORKERS', True),
+        "pin_memory": True,
     }
 
 
@@ -174,7 +178,11 @@ def repeat_factors_from_category_frequency(dataset_dicts, repeat_thresh):
         return torch.tensor(rep_factors, dtype=torch.float32)
 
 @configurable(from_config=_train_loader_from_config)
-def build_detection_train_loader(dataset, *, mapper, sampler=None, total_batch_size, aspect_ratio_grouping=True, num_workers=0):
+def build_detection_train_loader(
+    dataset, *, mapper, sampler=None, total_batch_size, 
+    aspect_ratio_grouping=True, num_workers=0,
+    prefetch_factor=4, persistent_workers=True, pin_memory=True
+):
     if isinstance(dataset, list):
         dataset = DatasetFromList(dataset, copy=False)
     if mapper is not None:
@@ -187,7 +195,10 @@ def build_detection_train_loader(dataset, *, mapper, sampler=None, total_batch_s
         sampler,
         total_batch_size,
         aspect_ratio_grouping=aspect_ratio_grouping,
-        num_workers=num_workers
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None,
+        persistent_workers=persistent_workers if num_workers > 0 else False,
+        pin_memory=pin_memory,
     )
 
 def _test_loader_from_config(cfg, dataset_name, mapper=None):
@@ -205,6 +216,9 @@ def _test_loader_from_config(cfg, dataset_name, mapper=None):
     )
     if mapper is None:
         mapper = DatasetMapper(cfg, False)
+        print(f"[build.py] Using default DatasetMapper")
+    else:
+        print(f"[build.py] Using provided mapper: {type(mapper).__name__}")
 
     return {"dataset": dataset, "mapper": mapper, "num_workers": cfg.DATALOADER.NUM_WORKERS}
 

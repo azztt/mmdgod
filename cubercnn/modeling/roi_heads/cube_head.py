@@ -143,6 +143,11 @@ class CubeHead(nn.Module):
             nn.init.normal_(self.bbox_3D_uncertainty.weight, std=0.001)
             nn.init.constant_(self.bbox_3D_uncertainty.bias, 5)
 
+        # Class prediction head (replaces BoxHead classification)
+        self.class_predictor = nn.Linear(self._output_size, self.num_classes + 1)  # +1 for background
+        nn.init.normal_(self.class_predictor.weight, std=0.01)
+        nn.init.constant_(self.class_predictor.bias, 0)
+
 
     def forward(self, x):
     
@@ -193,10 +198,28 @@ class CubeHead(nn.Module):
 
         else:
             box_z = box_z.view(n, self.num_classes, -1)
+        
+        # Predict class logits
+        if self.shared_fc:
+            class_logits = self.class_predictor(features)
+        else:
+            class_logits = self.class_predictor(self.feature_generator_dims(x))  # Reuse dims features
             
-        return box_2d_deltas, box_z, box_dims, box_pose, box_uncert
+        return box_2d_deltas, box_z, box_dims, box_pose, box_uncert, class_logits
 
 
-def build_cube_head(cfg, input_shape: Dict[str, ShapeSpec]):
-    name = cfg.MODEL.ROI_CUBE_HEAD.NAME
+def build_cube_head(cfg, input_shape: ShapeSpec):
+    """Build the 3D detection head.
+    
+    If USE_TRANSFORMER is True in config, automatically uses TransformerDecoder3DHead.
+    Otherwise uses the head specified by NAME (default: CubeHead).
+    """
+    # Check if transformer head should be used
+    use_transformer = getattr(cfg.MODEL.ROI_CUBE_HEAD, 'USE_TRANSFORMER', False)
+    
+    if use_transformer:
+        name = "TransformerDecoder3DHead"
+    else:
+        name = cfg.MODEL.ROI_CUBE_HEAD.NAME
+    
     return ROI_CUBE_HEAD_REGISTRY.get(name)(cfg, input_shape)

@@ -1,0 +1,214 @@
+# Configuration for DINOv2 + DETR3D 3D Object Detection
+# Uses DINOv2 backbone with RPN-initialized transformer decoder
+# Focus on 3D detection only (no 2D boxes)
+
+_BASE_: "Base_RGBD.yaml"
+
+# ===========================================================================
+# MODEL CONFIGURATION
+# ===========================================================================
+MODEL:
+  # Use new DETR3D meta-architecture
+  META_ARCHITECTURE: "DETR3D_RGBD"
+  
+  # DINOv2 backbone settings
+  BACKBONE:
+    NAME: "build_dinov2_dual_encoder"
+    
+    # DINOv2 model variant: vits14, vitb14, vitl14, vitg14
+    DINOV2_MODEL: "dinov2_vitl14"
+    
+    # RGB encoder: completely frozen for domain invariance
+    RGB_FREEZE_ALL: True
+    
+    # Depth encoder: partially frozen
+    # DINOv2-L has 24 blocks, freeze first 12 (half)
+    DEPTH_NUM_FROZEN_BLOCKS: 12
+    
+    # Fusion type for RGB-D features
+    FUSION_TYPE: "gated"  # Better than concat for cross-modal fusion
+    
+    # Output channels after fusion (for FPN/RPN compatibility)
+    OUT_CHANNELS: 256
+  
+  # Depth normalization (keep same as before)
+  DEPTH_PIXEL_MEAN: 0.0
+  DEPTH_PIXEL_STD: 1.0
+  DEPTH_MAX: 20.0
+  
+  # ImageNet normalization for DINOv2
+  PIXEL_MEAN: [123.675, 116.28, 103.53]
+  PIXEL_STD: [58.395, 57.12, 57.375]
+  
+  # RPN settings (uses fused multi-scale features)
+  RPN:
+    IN_FEATURES: ["p2", "p3", "p4", "p5"]
+    
+    # Fewer anchors since DETR decoder handles detection
+    ANCHOR_GENERATOR:
+      SIZES: [[32], [64], [128], [256]]
+      ASPECT_RATIOS: [[0.5, 1.0, 2.0]]
+    
+    # RPN acts as proposal filter, not final detector
+    PRE_NMS_TOPK_TRAIN: 2000
+    PRE_NMS_TOPK_TEST: 1000
+    POST_NMS_TOPK_TRAIN: 200
+    POST_NMS_TOPK_TEST: 100
+    
+    # Lower threshold since decoder refines proposals
+    NMS_THRESH: 0.7
+    
+    # Train RPN to provide good proposals
+    POSITIVE_FRACTION: 0.5
+    BATCH_SIZE_PER_IMAGE: 256
+  
+  # DETR3D Decoder settings
+  DETR3D_DECODER:
+    # Transformer architecture
+    HIDDEN_DIM: 256
+    NUM_HEADS: 8
+    NUM_LAYERS: 6
+    DIM_FEEDFORWARD: 2048
+    DROPOUT: 0.1
+    
+    # Number of queries (from RPN proposals)
+    NUM_QUERIES: 100
+    
+    # Rotation representation
+    POSE_TYPE: "6d"  # 6D rotation representation
+    
+    # Auxiliary losses for training
+    USE_AUX_LOSS: True
+  
+  # DETR3D Loss settings
+  DETR3D_LOSS:
+    # Classification (focal loss)
+    CLASS_WEIGHT: 1.0
+    FOCAL_ALPHA: 0.25
+    FOCAL_GAMMA: 2.0
+    
+    # 3D box regression
+    CENTER_WEIGHT: 5.0
+    DIMS_WEIGHT: 5.0
+    POSE_WEIGHT: 1.0
+    
+    # 3D IoU loss
+    GIOU3D_WEIGHT: 2.0
+  
+  # Number of classes (match dataset)
+  ROI_HEADS:
+    NUM_CLASSES: 31  # Hypersim/SUNRGBD unified classes
+
+# ===========================================================================
+# SOLVER CONFIGURATION
+# Optimized for DINOv2 backbone + DETR decoder
+# ===========================================================================
+SOLVER:
+  # AdamW is standard for vision transformers
+  TYPE: "adamw"
+  
+  # Batch size: DINOv2 is memory heavy, reduce batch size
+  # 16 per GPU x 4 GPUs = 64 total, but we'll use 32 for safety
+  IMS_PER_BATCH: 32
+  
+  # Learning rate
+  # DINOv2 frozen, only train decoder + depth encoder unfrozen blocks
+  # Lower LR since pretrained features are strong
+  BASE_LR: 0.0001
+  
+  # Weight decay: Important for transformers
+  WEIGHT_DECAY: 0.05
+  WEIGHT_DECAY_NORM: 0.0
+  
+  # LR Schedule
+  LR_SCHEDULER_NAME: "WarmupCosineLR"
+  
+  # Training iterations
+  # With smaller batch, need more iterations
+  # ~52k images / 32 batch = ~1625 iters/epoch
+  # 50 epochs = ~80k iters
+  MAX_ITER: 80000
+  
+  # Warmup: Important for transformer stability
+  WARMUP_ITERS: 3000
+  WARMUP_FACTOR: 0.001
+  WARMUP_METHOD: "linear"
+  
+  # Gradient clipping: Essential for stability
+  CLIP_GRADIENTS:
+    ENABLED: True
+    CLIP_TYPE: "norm"
+    CLIP_VALUE: 1.0
+    NORM_TYPE: 2.0
+  
+  # Checkpointing
+  CHECKPOINT_PERIOD: 8000  # Every ~10 epochs
+  
+  # Mixed precision
+  AMP:
+    ENABLED: True
+
+# ===========================================================================
+# INPUT CONFIGURATION
+# ===========================================================================
+INPUT:
+  # DINOv2 expects 14x divisible sizes (patch size)
+  # Use multiples of 56 (14*4) for clean feature maps
+  MIN_SIZE_TRAIN: (336, 392, 448, 504, 560)
+  MIN_SIZE_TEST: 448
+  MAX_SIZE_TEST: 448
+  
+  # Format: RGB for DINOv2 (pretrained on RGB)
+  FORMAT: "RGB"
+
+# ===========================================================================
+# TEST CONFIGURATION  
+# ===========================================================================
+TEST:
+  EVAL_PERIOD: 8000
+  DETECTIONS_PER_IMAGE: 100
+
+VIS_PERIOD: 4000
+
+# ===========================================================================
+# DATALOADER CONFIGURATION
+# ===========================================================================
+DATALOADER:
+  NUM_WORKERS: 4  # Reduce workers due to memory
+  SAMPLER_TRAIN: "RepeatFactorTrainingSampler"
+  REPEAT_THRESHOLD: 0.1
+  ASPECT_RATIO_GROUPING: True
+  FILTER_EMPTY_ANNOTATIONS: True
+
+# ===========================================================================
+# AUGMENTATION (from BasicAug config)
+# ===========================================================================
+AUG:
+  ENABLED: True
+  
+  COLOR_JITTER:
+    ENABLED: True
+    PROBABILITY: 0.8
+    BRIGHTNESS: 0.4
+    CONTRAST: 0.4
+    SATURATION: 0.4
+    HUE: 0.1
+  
+  GAUSSIAN_NOISE:
+    ENABLED: True
+    PROBABILITY: 0.5
+    STD_RANGE: [0.01, 0.05]
+  
+  DEPTH_DROPOUT:
+    ENABLED: True
+    PROBABILITY: 0.3
+    NUM_DROPS: [1, 5]
+    DROP_SIZE: [0.02, 0.1]
+  
+  DEPTH_NOISE:
+    ENABLED: True
+    PROBABILITY: 0.5
+    STD_RANGE: [0.01, 0.03]
+
+# Output directory
+OUTPUT_DIR: "./output/detr3d_dinov2"

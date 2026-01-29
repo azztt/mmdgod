@@ -1,0 +1,268 @@
+# =============================================================================
+# DINOv3 + DETR3D Base Configuration with Augmentations
+# =============================================================================
+# Architecture: DINOv3-ViT-B/16 backbone (RGB frozen, depth partially frozen)
+#               DETR3D-style cross-attention head
+# Training: Basic photometric and depth augmentations
+# =============================================================================
+
+_BASE_: "../Base.yaml"
+
+# ===========================================================================
+# Model Architecture - Pure DETR3D (No RPN, Learnable Queries)
+# ===========================================================================
+MODEL:
+  META_ARCHITECTURE: "PureDETR3D"
+  
+  # ---------------------------
+  # DINOv3 Backbone Settings
+  # ---------------------------
+  BACKBONE:
+    NAME: "build_dino_dual_encoder"
+    
+    # DINOv3-Base: 768 dim, 12 layers, patch_size=16
+    DINO_MODEL: "dinov3-vitb16"
+    
+    # RGB encoder: completely frozen for domain invariance
+    RGB_FREEZE_ALL: True
+    
+    # Depth encoder: partially frozen (freeze first half)
+    # Keep early layers frozen to preserve pretrained low-level features
+    DEPTH_NUM_FROZEN_BLOCKS: 6
+    
+    # Adaptation transformer encoders (TRAINABLE - adapt frozen backbone features)
+    USE_ADAPTATION_ENCODER: True
+    ADAPTATION_LAYERS: 2      # 2-layer transformer encoder per modality
+    ADAPTATION_HEADS: 8       # Multi-head attention
+    
+    # Feature fusion
+    FUSION_TYPE: "concat"  # Simple concatenation
+    OUT_CHANNELS: 256
+  
+  # Pixel normalization (ImageNet stats for DINOv3)
+  PIXEL_MEAN: [123.675, 116.28, 103.53]
+  PIXEL_STD: [58.395, 57.12, 57.375]
+  
+  # Depth normalization (sample-wise for domain generalization)
+  DEPTH_PIXEL_MEAN: 0.0
+  DEPTH_PIXEL_STD: 1.0
+  DEPTH_MAX: 20.0
+  
+  # Sample-wise depth normalization: normalizes each depth map independently
+  # Options: "fixed" (use DEPTH_MAX), "per_sample" (z-score), "percentile"
+  DEPTH_NORM_MODE: "per_sample"
+  DEPTH_NORM_PERCENTILE: 95  # Used when mode="percentile"
+  
+  # ---------------------------
+  # NO RPN - Pure DETR uses 100 learnable object queries
+  # ---------------------------
+  
+  # ---------------------------
+  # ROI Heads Settings
+  # CRITICAL: Must match actual number of categories (31)
+  # Base config has 43 but we only use 31 categories
+  # ---------------------------
+  ROI_HEADS:
+    NUM_CLASSES: 31
+    SCORE_THRESH_TEST: 0.05  # Lowered due to softmax dilution with existing checkpoint
+  
+  # ---------------------------
+  # Pure DETR3D Head (Multi-Scale Deformable Attention)
+  # Based on Deformable DETR official settings
+  # ---------------------------
+  ROI_CUBE_HEAD:
+    # Decoder architecture (Deformable DETR defaults)
+    FEATURE_DIM: 256         # Hidden dimension (d_model)
+    NUM_QUERIES: 300         # Deformable DETR uses 300 queries
+    NUM_DECODER_LAYERS: 6    # Transformer decoder layers
+    NUM_HEADS: 8             # Attention heads
+    DIM_FEEDFORWARD: 1024    # FFN dimension
+    DROPOUT: 0.1
+    N_POINTS: 4              # Sampling points per level in deformable attention
+    
+    # 3D prediction settings
+    POSE_TYPE: "yaw"  # Gravity-aligned yaw-only rotation (1D)
+    # Note: Focal length is taken from per-image intrinsics (K matrix) in the data
+    
+    # ===========================================
+    # Loss Weights (Deformable DETR style)
+    # Depth weight increased to force model to learn depth properly
+    # ===========================================
+    LOSS_W_CLS: 2.0      # Classification loss (focal loss)
+    LOSS_W_XY: 5.0       # 2D center loss (L1)
+    LOSS_W_Z: 2.0        # Depth loss (L1 in normalized space)
+    LOSS_W_DIMS: 1.0     # Dimensions loss (L1 on log-space)
+    LOSS_W_POSE: 1.0     # Pose loss (L1)
+    LOSS_W_GIOU: 2.0     # GIoU loss for 2D boxes (Deformable DETR default)
+    LOSS_W_JOINT: 0.0    # Corner loss DISABLED - redundant with disentangled losses
+    
+    # Focal Loss Parameters (Deformable DETR defaults)
+    FOCAL_ALPHA: 0.25
+    FOCAL_GAMMA: 2.0
+    
+    # ===========================================
+    # Test/Inference Settings (Deformable DETR defaults)
+    # ===========================================
+    TEST_SCORE_THRESH: 0.001  # Temporary: very low threshold to see any predictions
+    TEST_NMS_THRESH: 0.5     # IoU threshold for NMS
+    TEST_TOPK_PER_IMAGE: 100 # Keep top 100 after NMS (Deformable DETR default)
+  
+  # ---------------------------
+  # Depth Completion (disabled in base)
+  # ---------------------------
+  DEPTH_COMPLETION:
+    ENABLED: False
+
+# ===========================================================================
+# Augmentation Settings (Basic)
+# ===========================================================================
+AUG:
+  ENABLED: True
+  
+  # Photometric augmentations (RGB only)
+  COLOR_JITTER:
+    ENABLED: True
+    PROBABILITY: 0.8
+    BRIGHTNESS: 0.4
+    CONTRAST: 0.4
+    SATURATION: 0.4
+    HUE: 0.1
+  
+  # RGB Gaussian noise
+  GAUSSIAN_NOISE:
+    ENABLED: True
+    PROBABILITY: 0.5
+    STD_RANGE: [0.01, 0.05]
+  
+  # Depth dropout (simulate sensor noise/missing data)
+  DEPTH_DROPOUT:
+    ENABLED: True
+    PROBABILITY: 0.3
+    NUM_DROPS: [1, 5]
+    DROP_SIZE: [0.02, 0.1]
+  
+  # Depth Gaussian noise
+  DEPTH_NOISE:
+    ENABLED: True
+    PROBABILITY: 0.5
+    STD_RANGE: [0.01, 0.03]
+
+# Domain Generalization (disabled in base)
+DG:
+  ENABLED: False
+  FSDR:
+    ENABLED: False
+  OBJECT_STYLE_SWAP:
+    ENABLED: False
+
+# ===========================================================================
+# Solver Settings - Transformer Best Practices
+# ViT/DETR typically use: lower LR (1e-4), cosine schedule, longer warmup
+# ===========================================================================
+SOLVER:
+  TYPE: "adamw"
+  
+  # Learning rate: Reduced to 5e-5 for stability
+  # Depth was diverging at 1e-4, need much slower learning
+  BASE_LR: 0.00005
+  
+  # Backbone LR multiplier: 0.1x (pretrained backbone needs lower LR)
+  BACKBONE_MULTIPLIER: 0.1
+  
+  # Reference points & sampling offsets get 0.1x LR (handled in train script)
+  # LR_LINEAR_PROJ_MULT: 0.1
+  
+  # Weight decay (standard for transformers)
+  WEIGHT_DECAY: 0.0001
+  WEIGHT_DECAY_NORM: 0.0
+  
+  # LR Schedule - Cosine decay (better for transformers than step decay)
+  LR_SCHEDULER_NAME: "WarmupCosineLR"
+  # STEPS not used for cosine, but kept for compatibility
+  STEPS: ()
+  GAMMA: 0.1
+  
+  # Training iterations
+  # Hypersim: ~52k images, batch 40 → ~1300 iters/epoch (actual, no inflation)
+  # 33 epochs ≈ 42900 iters (with focal loss, no repeat factor sampling)
+  MAX_ITER: 42900
+  
+  # Warmup: 5% of training (longer warmup helps transformers)
+  WARMUP_ITERS: 2145
+  WARMUP_FACTOR: 0.001
+  WARMUP_METHOD: "linear"
+  
+  # Gradient clipping (essential for transformers)
+  CLIP_GRADIENTS:
+    ENABLED: True
+    CLIP_TYPE: "norm"
+    CLIP_VALUE: 0.1
+    NORM_TYPE: 2.0
+  
+  # Batch size
+  IMS_PER_BATCH: 40
+  
+  # Checkpointing (every epoch for early monitoring)
+  CHECKPOINT_PERIOD: 1300  # Save every epoch (52k / 40 = 1300 iters)
+
+  # AMP for memory efficiency (essential for ViT)
+  AMP:
+    ENABLED: True
+  
+  # EMA (Exponential Moving Average) for smoother/better inference
+  EMA:
+    ENABLED: True
+    DECAY: 0.9999
+    WARMUP_ITERS: 650  # Adjusted for batch 40 (~0.5 epoch warmup)
+    USE_EMA_FOR_EVAL: True
+
+# ===========================================================================
+# Input Settings
+# ===========================================================================
+# Fixed 512 max size for consistent resolution across all datasets
+# This normalizes XY errors (multiscan/scannetpp 1920x1440 -> ~512x384)
+INPUT:
+  MIN_SIZE_TRAIN: [512]     # Fixed size, no multiscale
+  MAX_SIZE_TRAIN: 512
+  MIN_SIZE_TEST: 512
+  MAX_SIZE_TEST: 512
+
+# ===========================================================================
+# Test Settings
+# ===========================================================================
+TEST:
+  DETECTIONS_PER_IMAGE: 300
+  EVAL_PERIOD: 1300  # ~1 epoch (52k images / 40 batch = 1300 iters)
+  
+  # Multi-frequency evaluation settings
+  # VAL: 80/20 split from train data, evaluated every epoch
+  # FULL_EVAL: External validation sets, evaluated every N epochs
+  VAL_SPLIT: 0.2  # 20% of training data for validation split
+  FULL_EVAL_PERIOD: 13000  # ~10 epochs for full evaluation on all test sets
+
+# ===========================================================================
+# Dataloader
+# ===========================================================================
+DATALOADER:
+  NUM_WORKERS: 12  # Increased for prefetching
+  SAMPLER_TRAIN: "TrainingSampler"  # Standard sampler (focal loss handles class imbalance)
+  # REPEAT_THRESHOLD: 0.1  # Not needed with focal loss
+  ASPECT_RATIO_GROUPING: True
+  FILTER_EMPTY_ANNOTATIONS: True
+  # Prefetching: each worker prefetches this many batches
+  PREFETCH_FACTOR: 4
+  # Keep workers alive between epochs (faster, uses more RAM)
+  PERSISTENT_WORKERS: True
+
+# ===========================================================================
+# Dataset Configuration
+# ===========================================================================
+DATASETS:
+  CATEGORY_NAMES: ('person', 'books', 'chair', 'towel', 'blinds', 'window', 'lamp', 'shelves', 'mirror', 'sink', 'cabinet', 'bathtub', 'door', 'toilet', 'desk', 'box', 'bookcase', 'picture', 'table', 'counter', 'bed', 'night stand', 'dresser', 'pillow', 'sofa', 'television', 'floor mat', 'curtain', 'clothes', 'stationery', 'refrigerator')
+  DATA_ROOT: "/mnt/data/users/anweshan/omni3d/data"
+  MANIFEST_ROOT: "/mnt/data/users/anweshan/omni3d/data/unidet3d_format/cleaned_manifests"
+  TRAIN: ("hypersim_train_rgbd",)
+  TRAIN_MANIFEST: "hypersim_train_filtered.json"
+  TEST: ("hypersim_val_rgbd", "sunrgbd_val_rgbd", "multiscan_val_rgbd", "scannetpp_val_rgbd")
+
+OUTPUT_DIR: "./output/dinov3_base_aug"

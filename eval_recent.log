@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/mnt/data/users/anweshan/omni3d/tools/train_rgbd.py", line 36, in <module>
+    import detectron2.utils.comm as comm
+ModuleNotFoundError: No module named 'detectron2'

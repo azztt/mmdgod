@@ -27,6 +27,67 @@ from detectron2.modeling.backbone.build import BACKBONE_REGISTRY
 from detectron2.modeling.backbone.fpn import FPN, LastLevelMaxPool
 
 
+class TransformerAdaptationEncoder(nn.Module):
+    """Lightweight transformer encoder to adapt frozen backbone features.
+    
+    Applies self-attention across spatial locations to refine features
+    without modifying the frozen backbone weights.
+    """
+    def __init__(self, dim, num_layers=2, num_heads=8, mlp_ratio=4.0, dropout=0.0):
+        super().__init__()
+        self.layers = nn.ModuleList([
+            TransformerEncoderLayer(dim, num_heads, mlp_ratio, dropout)
+            for _ in range(num_layers)
+        ])
+        
+    def forward(self, x):
+        """
+        Args:
+            x: Feature map (B, C, H, W)
+        Returns:
+            Adapted feature map (B, C, H, W)
+        """
+        B, C, H, W = x.shape
+        # Flatten spatial dims: (B, C, H, W) -> (B, H*W, C)
+        x_flat = x.flatten(2).transpose(1, 2)
+        
+        # Apply transformer layers
+        for layer in self.layers:
+            x_flat = layer(x_flat)
+        
+        # Reshape back: (B, H*W, C) -> (B, C, H, W)
+        x_out = x_flat.transpose(1, 2).reshape(B, C, H, W)
+        return x_out
+
+
+class TransformerEncoderLayer(nn.Module):
+    """Single transformer encoder layer with self-attention and FFN."""
+    def __init__(self, dim, num_heads, mlp_ratio=4.0, dropout=0.0):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(dim)
+        self.attn = nn.MultiheadAttention(dim, num_heads, dropout=dropout, batch_first=True)
+        self.norm2 = nn.LayerNorm(dim)
+        mlp_dim = int(dim * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, mlp_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_dim, dim),
+            nn.Dropout(dropout),
+        )
+        
+    def forward(self, x):
+        """
+        Args:
+            x: (B, N, C) where N = H*W
+        """
+        # Self-attention with residual
+        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        # FFN with residual
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+
 class ResNetEncoder(nn.Module):
     """ResNet encoder for a single modality (RGB or Depth).
     
@@ -160,6 +221,9 @@ class DualEncoderBackbone(Backbone):
         depth_freeze_at: Freeze depth encoder stages (default: 2)
         fusion_type: How to fuse features ('concat', 'add', 'gated')
         pretrained: Whether to use pretrained weights
+        use_adaptation: Whether to use adaptation encoders after frozen features
+        adaptation_layers: Number of transformer layers for adaptation
+        adaptation_heads: Number of attention heads
     """
     
     def __init__(
@@ -172,10 +236,14 @@ class DualEncoderBackbone(Backbone):
         depth_freeze_at: int = 2,
         fusion_type: str = 'concat',
         pretrained: bool = True,
+        use_adaptation: bool = False,
+        adaptation_layers: int = 2,
+        adaptation_heads: int = 8,
     ):
         super().__init__()
         
         self.fusion_type = fusion_type
+        self.use_adaptation = use_adaptation
         
         # RGB encoder (more frozen for domain-invariant features)
         self.rgb_encoder = ResNetEncoder(
@@ -292,6 +360,29 @@ class DualEncoderBackbone(Backbone):
         else:
             raise ValueError(f"Unknown fusion type: {fusion_type}")
         
+        # Adaptation encoders (lightweight transformer to adapt frozen features)
+        if self.use_adaptation:
+            self.rgb_adaptation = nn.ModuleDict()
+            self.depth_adaptation = nn.ModuleDict()
+            
+            for key in ['res2', 'res3', 'res4', 'res5']:
+                rgb_ch = rgb_channels[key]
+                depth_ch = depth_channels[key]
+                
+                # RGB adaptation encoder
+                self.rgb_adaptation[key] = TransformerAdaptationEncoder(
+                    dim=rgb_ch,
+                    num_layers=adaptation_layers,
+                    num_heads=adaptation_heads,
+                )
+                
+                # Depth adaptation encoder
+                self.depth_adaptation[key] = TransformerAdaptationEncoder(
+                    dim=depth_ch,
+                    num_layers=adaptation_layers,
+                    num_heads=adaptation_heads,
+                )
+        
         # Output feature strides (same as ResNet)
         self._out_feature_strides = {'res2': 4, 'res3': 8, 'res4': 16, 'res5': 32}
         self._out_features = ['res2', 'res3', 'res4', 'res5']
@@ -314,6 +405,16 @@ class DualEncoderBackbone(Backbone):
         # Extract features from both encoders
         rgb_feats = self.rgb_encoder(x)
         depth_feats = self.depth_encoder(depth)
+        
+        # Apply adaptation encoders if enabled
+        if self.use_adaptation:
+            rgb_feats_adapted = {}
+            depth_feats_adapted = {}
+            for key in self._out_features:
+                rgb_feats_adapted[key] = self.rgb_adaptation[key](rgb_feats[key])
+                depth_feats_adapted[key] = self.depth_adaptation[key](depth_feats[key])
+            rgb_feats = rgb_feats_adapted
+            depth_feats = depth_feats_adapted
         
         # Fuse features
         fused_feats = {}
@@ -446,48 +547,44 @@ class DualEncoderFPN(Backbone):
         # Get bottom-up features with fusion
         bottom_up_features = self.bottom_up(images, depth)
         
-        # Pass through FPN
-        # Note: FPN expects the bottom_up module's forward to be called internally
-        # We need to override this behavior
-        
-        # Build FPN features manually
+        # Run FPN forward logic (adapted from detectron2 FPN.forward)
+        # lateral_convs[0] corresponds to in_features[-1] (deepest/res5)
         results = []
-        in_features = self.fpn.in_features
+        prev_features = self.fpn.lateral_convs[0](bottom_up_features[self.fpn.in_features[-1]])
+        results.append(self.fpn.output_convs[0](prev_features))
         
-        prev_features = None
-        for i, f in enumerate(reversed(in_features)):
-            lateral_conv = self.fpn.lateral_convs[len(in_features) - 1 - i]
-            output_conv = self.fpn.output_convs[len(in_features) - 1 - i]
-            
-            features = bottom_up_features[f]
-            lateral_features = lateral_conv(features)
-            
-            if prev_features is not None:
-                top_down = F.interpolate(prev_features, size=lateral_features.shape[-2:], mode="nearest")
-                prev_features = lateral_features + top_down
+        # Reverse feature maps into top-down order (from low to high resolution)
+        for idx, (lateral_conv, output_conv) in enumerate(
+            zip(self.fpn.lateral_convs, self.fpn.output_convs)
+        ):
+            if idx > 0:
+                features = self.fpn.in_features[-idx - 1]
+                features = bottom_up_features[features]
+                lateral_features = lateral_conv(features)
+                # Use explicit size instead of scale_factor to handle odd dimensions
+                top_down_features = F.interpolate(
+                    prev_features, size=lateral_features.shape[-2:], mode="nearest"
+                )
+                prev_features = lateral_features + top_down_features
+                results.insert(0, output_conv(prev_features))
+        
+        # Add top block features (p6 from max pool of p5)
+        if self.fpn.top_block is not None:
+            if self.fpn.top_block.in_feature in bottom_up_features:
+                top_block_in_feature = bottom_up_features[self.fpn.top_block.in_feature]
             else:
-                prev_features = lateral_features
-            
-            results.insert(0, output_conv(prev_features))
-        
-        # Add top block (max pool) features
-        last_feature = results[-1]
-        for block in self.fpn.top_block:
-            last_feature = block(last_feature)
-            results.append(last_feature)
+                top_block_in_feature = results[self.fpn._out_features.index(self.fpn.top_block.in_feature)]
+            results.extend(self.fpn.top_block(top_block_in_feature))
         
         # Build output dict
-        out = {}
-        for i, f in enumerate(self.fpn._out_features):
-            out[f] = results[i]
-        
-        return out
+        assert len(self.fpn._out_features) == len(results)
+        return {f: res for f, res in zip(self.fpn._out_features, results)}
     
     def output_shape(self):
         """Return output shape specification."""
         return {
             name: ShapeSpec(
-                channels=self._out_feature_channels.get(name, self.fpn._out_channels),
+                channels=self._out_feature_channels[name],
                 stride=self._out_feature_strides[name],
             )
             for name in self._out_features
@@ -506,15 +603,26 @@ def build_dual_encoder_fpn_backbone(cfg, input_shape: ShapeSpec, priors=None):
     Returns:
         DualEncoderFPN backbone
     """
-    return DualEncoderFPN(cfg, input_shape, priors)
+    # Get adaptation encoder config
+    use_adaptation = cfg.MODEL.BACKBONE.get('USE_ADAPTATION_ENCODER', False)
+    adaptation_layers = cfg.MODEL.BACKBONE.get('ADAPTATION_LAYERS', 2)
+    adaptation_heads = cfg.MODEL.BACKBONE.get('ADAPTATION_HEADS', 8)
+    
+    return DualEncoderFPN(
+        cfg, input_shape, priors,
+        use_adaptation=use_adaptation,
+        adaptation_layers=adaptation_layers,
+        adaptation_heads=adaptation_heads
+    )
 
 
 # Also register a simpler version that just uses concat without FPN integration issues
 @BACKBONE_REGISTRY.register()
 def build_simple_dual_encoder_backbone(cfg, input_shape: ShapeSpec, priors=None):
-    """Build simple dual encoder backbone (without FPN complications).
+    """Build simple dual encoder backbone with FPN that handles RGB-D.
     
-    This version is simpler and uses the original FPN class properly.
+    This uses DualEncoderFPN which properly handles concatenated RGB+D input
+    by splitting it before passing to the dual encoders.
     
     Args:
         cfg: Detectron2 config  
@@ -522,45 +630,17 @@ def build_simple_dual_encoder_backbone(cfg, input_shape: ShapeSpec, priors=None)
         priors: Optional priors
         
     Returns:
-        Backbone with dual encoder and FPN
+        DualEncoderFPN backbone
     """
-    # Get config values (support both old FREEZE_AT and new FROZEN_STAGES keys)
-    rgb_depth = getattr(cfg.MODEL, 'RGB_RESNET_DEPTH', cfg.MODEL.RESNETS.DEPTH)
-    depth_resnet_depth = getattr(cfg.MODEL, 'DEPTH_RESNET_DEPTH', cfg.MODEL.RESNETS.DEPTH)
+    # Get adaptation encoder config
+    use_adaptation = cfg.MODEL.BACKBONE.get('USE_ADAPTATION_ENCODER', False)
+    adaptation_layers = cfg.MODEL.BACKBONE.get('ADAPTATION_LAYERS', 2)
+    adaptation_heads = cfg.MODEL.BACKBONE.get('ADAPTATION_HEADS', 8)
     
-    # New config keys (dgmmod style): RGB_FROZEN_STAGES, DEPTH_FROZEN_STAGES
-    # Old config keys: RGB_FREEZE_AT, DEPTH_FREEZE_AT
-    rgb_frozen_stages = getattr(cfg.MODEL, 'RGB_FROZEN_STAGES', 
-                                getattr(cfg.MODEL, 'RGB_FREEZE_AT', 4))
-    depth_frozen_stages = getattr(cfg.MODEL, 'DEPTH_FROZEN_STAGES',
-                                  getattr(cfg.MODEL, 'DEPTH_FREEZE_AT', 2))
-    
-    fusion_type = getattr(cfg.MODEL, 'FUSION_TYPE', 'concat')
-    imagenet_pretrain = cfg.MODEL.WEIGHTS_PRETRAIN + cfg.MODEL.WEIGHTS == ''
-    
-    # Build dual encoder backbone
-    bottom_up = DualEncoderBackbone(
-        cfg=cfg,
-        input_shape=input_shape,
-        rgb_depth=rgb_depth,
-        depth_depth=depth_resnet_depth,
-        rgb_freeze_at=rgb_frozen_stages,
-        depth_freeze_at=depth_frozen_stages,
-        fusion_type=fusion_type,
-        pretrained=imagenet_pretrain,
+    # Use DualEncoderFPN which handles 4-channel input properly
+    return DualEncoderFPN(
+        cfg, input_shape, priors,
+        use_adaptation=use_adaptation,
+        adaptation_layers=adaptation_layers,
+        adaptation_heads=adaptation_heads
     )
-    
-    # Build FPN
-    in_features = cfg.MODEL.FPN.IN_FEATURES
-    out_channels = cfg.MODEL.FPN.OUT_CHANNELS
-    
-    backbone = FPN(
-        bottom_up=bottom_up,
-        in_features=in_features,
-        out_channels=out_channels,
-        norm=cfg.MODEL.FPN.NORM,
-        top_block=LastLevelMaxPool(),
-        fuse_type=cfg.MODEL.FPN.FUSE_TYPE,
-    )
-    
-    return backbone

@@ -1,0 +1,166 @@
+# Configuration for DINOv2 + DETR3D-style 3D Object Detection
+# Uses DINOv2 backbone with frozen RGB and partially frozen depth
+# Uses DETR3D-style cross-attention head instead of ROI pooling
+
+_BASE_: "Base_RGBD.yaml"
+
+# ===========================================================================
+# Model Architecture
+# ===========================================================================
+MODEL:
+  # Use DINOv2 + DETR3D meta-architecture
+  META_ARCHITECTURE: "DETR3D_RGBD"
+  
+  # ---------------------------
+  # DINOv2 Backbone Settings
+  # ---------------------------
+  BACKBONE:
+    NAME: "build_dinov2_dual_encoder"
+    
+    # DINOv2 model variant: vits14, vitb14, vitl14, vitg14
+    DINOV2_MODEL: "dinov2_vitl14"  # Large model (1024 dim)
+    
+    # RGB encoder: completely frozen for domain invariance
+    RGB_FREEZE_ALL: True
+    
+    # Depth encoder: partially frozen (freeze first 12 of 24 blocks)
+    DEPTH_NUM_FROZEN_BLOCKS: 12
+    
+    # Fusion type for RGB+Depth features
+    FUSION_TYPE: "concat"  # concat, add, or gated
+    
+    # Output channels after fusion projection
+    OUT_CHANNELS: 256
+  
+  # Pixel normalization for DINOv2 (ImageNet stats)
+  PIXEL_MEAN: [123.675, 116.28, 103.53]
+  PIXEL_STD: [58.395, 57.12, 57.375]
+  
+  # Depth normalization
+  DEPTH_PIXEL_MEAN: 0.0
+  DEPTH_PIXEL_STD: 1.0
+  
+  # ---------------------------
+  # RPN Settings
+  # ---------------------------
+  # RPN operates on fused DINOv2 features
+  ANCHOR_GENERATOR:
+    SIZES: [[32], [64], [128], [256], [512]]
+    ASPECT_RATIOS: [[0.5, 1.0, 2.0]]
+  
+  RPN:
+    IN_FEATURES: ["p2", "p3", "p4", "p5"]
+    PRE_NMS_TOPK_TRAIN: 2000
+    PRE_NMS_TOPK_TEST: 1000
+    POST_NMS_TOPK_TRAIN: 1000
+    POST_NMS_TOPK_TEST: 500
+  
+  # ---------------------------
+  # ROI Heads Settings
+  # ---------------------------
+  ROI_HEADS:
+    IN_FEATURES: ["p2", "p3", "p4", "p5"]
+    NUM_CLASSES: 31  # Hypersim categories
+  
+  # ---------------------------
+  # 3D Detection Head Settings (DETR3D-style)
+  # ---------------------------
+  ROI_CUBE_HEAD:
+    # Use DETR3D-style head with cross-attention
+    NAME: "DETR3DHead"
+    
+    # Transformer architecture
+    FEATURE_DIM: 256
+    NUM_HEADS: 8
+    NUM_DECODER_LAYERS: 4  # Cross-attention layers
+    DIM_FEEDFORWARD: 1024
+    DROPOUT: 0.1
+    
+    # ROI pooler settings (for initial query features)
+    POOLER_TYPE: "ROIAlignV2"
+    POOLER_RESOLUTION: 7
+    POOLER_SAMPLING_RATIO: 0
+    
+    # 3D prediction settings
+    Z_TYPE: "direct"
+    POSE_TYPE: "6d"
+    ALLOCENTRIC_POSE: True
+    VIRTUAL_DEPTH: True
+    VIRTUAL_FOCAL: 512.0
+    
+    # Loss settings
+    USE_CONFIDENCE: 1.0
+    DISENTANGLED_LOSS: True
+    CHAMFER_POSE: True
+    DIMS_PRIORS_ENABLED: True
+    
+    # Loss weights (3D only - no 2D box loss)
+    LOSS_W_3D: 1.0
+    LOSS_W_XY: 0.0     # Disabled for 3D-only
+    LOSS_W_Z: 1.0
+    LOSS_W_DIMS: 1.0
+    LOSS_W_POSE: 1.0
+    LOSS_W_JOINT: 1.0
+
+# ===========================================================================
+# Solver Configuration
+# ===========================================================================
+SOLVER:
+  TYPE: "adamw"
+  
+  # Batch size (may need to reduce for DINOv2 memory)
+  IMS_PER_BATCH: 32
+  
+  # Learning rate (lower for frozen backbone)
+  BASE_LR: 0.0002
+  BACKBONE_MULTIPLIER: 0.0  # Freeze backbone (just depth unfrozen layers train)
+  
+  # Weight decay
+  WEIGHT_DECAY: 0.05
+  WEIGHT_DECAY_NORM: 0.0
+  
+  # LR Schedule
+  LR_SCHEDULER_NAME: "WarmupCosineLR"
+  MAX_ITER: 40000
+  WARMUP_ITERS: 2000
+  WARMUP_FACTOR: 0.001
+  
+  # Gradient clipping (important for transformers)
+  CLIP_GRADIENTS:
+    ENABLED: True
+    CLIP_TYPE: "norm"
+    CLIP_VALUE: 1.0
+  
+  # Checkpointing
+  CHECKPOINT_PERIOD: 4000
+  
+  # Mixed precision
+  AMP:
+    ENABLED: True
+
+# ===========================================================================
+# Test Configuration  
+# ===========================================================================
+TEST:
+  EVAL_PERIOD: 4000
+  DETECTIONS_PER_IMAGE: 100
+
+VIS_PERIOD: 2000
+
+# ===========================================================================
+# Input Settings
+# ===========================================================================
+INPUT:
+  # DINOv2 expects specific input sizes (multiples of 14)
+  MIN_SIZE_TRAIN: (280, 336, 392, 448, 504)
+  MIN_SIZE_TEST: 448
+  MAX_SIZE_TEST: 448
+
+# ===========================================================================
+# Dataset Configuration
+# ===========================================================================
+DATASETS:
+  TRAIN: ("hypersim_train_rgbd",)
+  TEST: ("hypersim_val_rgbd", "sunrgbd_val_rgbd", "multiscan_val_rgbd", "scannetpp_val_rgbd")
+
+OUTPUT_DIR: "./output/dinov2_detr3d"

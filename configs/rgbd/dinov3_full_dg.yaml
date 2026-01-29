@@ -1,0 +1,45 @@
+# =============================================================================
+# DINOv3 + All Domain Generalization Strategies (Full)
+# =============================================================================
+# Progressive config: base_aug + gated fusion + depth completion + OSS + FSDR
+#
+# Combines ALL domain generalization techniques:
+# - Gated Fusion: Adaptive RGB/depth weighting
+# - Depth Completion: Self-supervised auxiliary task
+# - FSDR: Frequency-domain augmentation
+# - OSS: Object-level style swap
+#
+# This is the full model with maximum domain generalization capabilities.
+# =============================================================================
+
+_BASE_: "dinov3_gated_fusion.yaml"
+
+# Enable Domain Generalization with all techniques
+DG:
+  ENABLED: True
+  
+  # Frequency Space Domain Randomization
+  FSDR:
+    ENABLED: True
+    PROBABILITY: 0.5
+    VARIANT_BANDS: [[0, 2], [32, 64]]
+    BLOCK_SIZE: 64
+  
+  # Object Style Swap
+  OBJECT_STYLE_SWAP:
+    ENABLED: True
+
+# Enable Depth Completion auxiliary task
+MODEL:
+  DEPTH_COMPLETION:
+    ENABLED: True
+    FEATURE_DIM: 256
+    NUM_DECODER_LAYERS: 4
+    USE_SKIP_CONNECTIONS: True
+    SPARSITY: 0.1
+    SPARSITY_MIN: 0.05
+    SPARSITY_MAX: 0.2
+    LOSS_TYPE: "l1"
+    LOSS_WEIGHT: 1.0
+
+OUTPUT_DIR: "./output/dinov3_full_dg"

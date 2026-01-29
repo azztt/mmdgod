@@ -11,7 +11,7 @@ from pytorch3d.transforms.so3 import (
 )
 from detectron2.config import configurable
 from detectron2.structures import Instances, Boxes, pairwise_iou, pairwise_ioa
-from detectron2.layers import ShapeSpec, nonzero_tuple
+from detectron2.layers import ShapeSpec, nonzero_tuple, batched_nms
 from detectron2.modeling.proposal_generator.proposal_utils import add_ground_truth_to_proposals
 from detectron2.utils.events import get_event_storage
 from detectron2.modeling.roi_heads import (
@@ -52,11 +52,15 @@ class ROIHeads3D(StandardROIHeads):
         loss_w_dims: float,
         loss_w_pose: float,
         loss_w_joint: float,
+        loss_w_cls: float,
         use_confidence: float,
         inverse_z_weight: bool,
         z_type: str,
         pose_type: str,
         cluster_bins: int,
+        test_score_thresh: float = 0.05,
+        test_nms_thresh: float = 0.5,
+        test_topk_per_image: int = 100,
         priors = None,
         dims_priors_enabled = None,
         dims_priors_func = None,
@@ -88,6 +92,7 @@ class ROIHeads3D(StandardROIHeads):
         self.loss_w_dims = loss_w_dims
         self.loss_w_pose = loss_w_pose
         self.loss_w_joint = loss_w_joint
+        self.loss_w_cls = loss_w_cls
 
         # loss modes
         self.disentangled_loss = disentangled_loss
@@ -96,6 +101,11 @@ class ROIHeads3D(StandardROIHeads):
         # misc
         self.test_scale = test_scale
         self.ignore_thresh = ignore_thresh
+        
+        # inference thresholds
+        self.test_score_thresh = test_score_thresh
+        self.test_nms_thresh = test_nms_thresh
+        self.test_topk_per_image = test_topk_per_image
         
         # related to network outputs
         self.z_type = z_type
@@ -188,6 +198,7 @@ class ROIHeads3D(StandardROIHeads):
             'loss_w_dims': cfg.MODEL.ROI_CUBE_HEAD.LOSS_W_DIMS,
             'loss_w_pose': cfg.MODEL.ROI_CUBE_HEAD.LOSS_W_POSE,
             'loss_w_joint': cfg.MODEL.ROI_CUBE_HEAD.LOSS_W_JOINT,
+            'loss_w_cls': cfg.MODEL.ROI_CUBE_HEAD.LOSS_W_CLS,
             'z_type': cfg.MODEL.ROI_CUBE_HEAD.Z_TYPE,
             'pose_type': cfg.MODEL.ROI_CUBE_HEAD.POSE_TYPE,
             'dims_priors_enabled': cfg.MODEL.ROI_CUBE_HEAD.DIMS_PRIORS_ENABLED,
@@ -201,48 +212,65 @@ class ROIHeads3D(StandardROIHeads):
             'cluster_bins': cfg.MODEL.ROI_CUBE_HEAD.CLUSTER_BINS,
             'ignore_thresh': cfg.MODEL.RPN.IGNORE_THRESHOLD,
             'scale_roi_boxes': cfg.MODEL.ROI_CUBE_HEAD.SCALE_ROI_BOXES,
+            'test_score_thresh': cfg.MODEL.ROI_CUBE_HEAD.TEST_SCORE_THRESH,
+            'test_nms_thresh': cfg.MODEL.ROI_CUBE_HEAD.TEST_NMS_THRESH,
+            'test_topk_per_image': cfg.MODEL.ROI_CUBE_HEAD.TEST_TOPK_PER_IMAGE,
         }
 
 
-    def forward(self, images, features, proposals, Ks, im_scales_ratio, targets=None):
-
+    def forward(self, images, features, proposals, Ks, im_scales_ratio, targets=None, fused_features=None):
+        """Forward pass for ROI heads - 3D only, no BoxHead.
+        
+        RPN proposals are used directly as query initialization for the 3D decoder.
+        Classification is done by the 3D head, not BoxHead.
+        
+        Args:
+            images: Input images
+            features: FPN features (used only for cube feature extraction)
+            proposals: Region proposals from RPN (used as query init)
+            Ks: Camera intrinsics
+            im_scales_ratio: Image scale ratios
+            targets: Ground truth instances (training only)
+            fused_features: RGB-D fused features for 3D detection
+                           If None, uses 'features' for backward compatibility
+        """
+        # Use fused features for 3D if provided, otherwise fall back to features
+        cube_features = fused_features if fused_features is not None else features
+        
         im_dims = [image.shape[1:] for image in images]
 
         del images
 
         if self.training:
+            # Sample and label proposals (match with GT)
             proposals = self.label_and_sample_proposals(proposals, targets)
         
         del targets
 
         if self.training:
-
-            losses = self._forward_box(features, proposals)
-            if self.loss_w_3d > 0:
-                instances_3d, losses_cube = self._forward_cube(features, proposals, Ks, im_dims, im_scales_ratio)
-                losses.update(losses_cube)
-
+            # No BoxHead - go directly to 3D head which now also predicts class
+            # CubeHead uses fused RGB-D features and outputs class predictions
+            instances_3d, losses = self._forward_cube(cube_features, proposals, Ks, im_dims, im_scales_ratio)
             return instances_3d, losses
         
         else:
-
-            # when oracle is available, by pass the box forward.
-            # simulate the predicted instances by creating a new 
-            # instance for each passed in image.
-            if isinstance(proposals, list) and ~np.any([isinstance(p, Instances) for p in proposals]):
-                pred_instances = []
-                for proposal, im_dim in zip(proposals, im_dims):
-                    
+            # Inference: use proposals directly, no BoxHead
+            # Create instances from proposals
+            pred_instances = []
+            for proposal_per_im, im_dim in zip(proposals, im_dims):
+                if isinstance(proposal_per_im, Instances):
+                    pred_instances.append(proposal_per_im)
+                else:
+                    # Oracle case
                     pred_instances_i = Instances(im_dim)
-                    pred_instances_i.pred_boxes = Boxes(proposal['gt_bbox2D'])
-                    pred_instances_i.pred_classes =  proposal['gt_classes']
-                    pred_instances_i.scores = torch.ones_like(proposal['gt_classes']).float()
+                    pred_instances_i.pred_boxes = Boxes(proposal_per_im['gt_bbox2D'])
+                    pred_instances_i.pred_classes = proposal_per_im['gt_classes']
+                    pred_instances_i.scores = torch.ones_like(proposal_per_im['gt_classes']).float()
                     pred_instances.append(pred_instances_i)
-            else:
-                pred_instances = self._forward_box(features, proposals)
             
+            # 3D head predicts 3D boxes and classes
             if self.loss_w_3d > 0:
-                pred_instances = self._forward_cube(features, pred_instances, Ks, im_dims, im_scales_ratio)
+                pred_instances = self._forward_cube(cube_features, pred_instances, Ks, im_dims, im_scales_ratio)
             return pred_instances, {}
     
 
@@ -325,6 +353,9 @@ class ROIHeads3D(StandardROIHeads):
     
     def _forward_cube(self, features, instances, Ks, im_current_dims, im_scales_ratio):
         
+        # Get device from features before converting to list
+        feature_device = features[self.in_features[0]].device
+        
         features = [features[f] for f in self.in_features]
 
         # training on foreground
@@ -341,7 +372,8 @@ class ROIHeads3D(StandardROIHeads):
             # The loss is only defined on positive proposals
             proposals, _ = select_foreground_proposals(instances, self.num_classes)
             proposal_boxes = [x.proposal_boxes for x in proposals]
-            pred_boxes = [x.pred_boxes for x in proposals]
+            # No BoxHead, so use proposal_boxes as pred_boxes
+            pred_boxes = proposal_boxes
 
             box_classes = (torch.cat([p.gt_classes for p in proposals], dim=0) if len(proposals) else torch.empty(0))
             gt_boxes3D = torch.cat([p.gt_boxes3D for p in proposals], dim=0,)
@@ -352,9 +384,16 @@ class ROIHeads3D(StandardROIHeads):
         # eval on all instances
         else:
             proposals = instances
-            pred_boxes = [x.pred_boxes for x in instances]
+            # For inference without BoxHead, use proposal_boxes if pred_boxes not available
+            pred_boxes = []
+            for x in instances:
+                if hasattr(x, 'pred_boxes'):
+                    pred_boxes.append(x.pred_boxes)
+                else:
+                    pred_boxes.append(x.proposal_boxes)
             proposal_boxes = pred_boxes
-            box_classes = torch.cat([x.pred_classes for x in instances])
+            # Use dummy class 0 for inference - actual class will be predicted by 3D head
+            box_classes = torch.zeros(sum(len(x) for x in instances), dtype=torch.long, device=feature_device)
 
         proposal_boxes_scaled = self.scale_proposals(proposal_boxes)
 
@@ -422,11 +461,54 @@ class ROIHeads3D(StandardROIHeads):
         pred_src_x = (pred_src_boxes[:, 2] + pred_src_boxes[:, 0]) * 0.5
         pred_src_y = (pred_src_boxes[:, 3] + pred_src_boxes[:, 1]) * 0.5
         
-        # forward predictions
-        cube_2d_deltas, cube_z, cube_dims, cube_pose, cube_uncert = self.cube_head(cube_features)
+        # forward predictions - now includes class_logits
+        cube_outputs = self.cube_head(cube_features)
+        
+        # Handle different head output formats
+        query_type = None
+        learned_boxes_2d = None
+        if len(cube_outputs) == 8:
+            # HybridTransformer3DHead: includes query_type and learned_boxes_2d
+            cube_2d_deltas, cube_z, cube_dims, cube_pose, cube_uncert, class_logits, query_type, learned_boxes_2d = cube_outputs
+            is_hybrid = True
+        elif len(cube_outputs) == 6:
+            cube_2d_deltas, cube_z, cube_dims, cube_pose, cube_uncert, class_logits = cube_outputs
+            is_hybrid = False
+        else:
+            # Backward compatibility with old cube heads
+            cube_2d_deltas, cube_z, cube_dims, cube_pose, cube_uncert = cube_outputs
+            class_logits = None
+            is_hybrid = False
+        
+        # For hybrid head, we have both RPN queries (with boxes) and learned queries (no boxes)
+        # For now, only process RPN queries during training for simplicity
+        # Learned queries will be used at inference for additional detections
+        if is_hybrid and query_type is not None:
+            n_rpn = (query_type == 0).sum().item()
+            n_learned = (query_type == 1).sum().item()
+            
+            # During training, only use RPN queries (they have GT matching)
+            if self.training and n_rpn > 0:
+                rpn_mask = query_type == 0
+                cube_2d_deltas = cube_2d_deltas[rpn_mask]
+                cube_z = cube_z[rpn_mask] if cube_z is not None else None
+                cube_dims = cube_dims[rpn_mask]
+                cube_pose = cube_pose[rpn_mask]
+                if cube_uncert is not None:
+                    cube_uncert = cube_uncert[rpn_mask]
+                if class_logits is not None:
+                    class_logits = class_logits[rpn_mask]
+                n = n_rpn
+            # During inference, we'll handle both later
         
         # simple indexing re-used commonly for selection purposes
         fg_inds = torch.arange(n)
+        
+        # During inference, get predicted classes from class_logits BEFORE indexing per-category predictions
+        if not self.training and class_logits is not None:
+            pred_class_probs = F.softmax(class_logits, dim=-1)
+            pred_class_scores, predicted_classes = pred_class_probs[:, :-1].max(dim=1)  # Exclude background
+            box_classes = predicted_classes  # Use predicted classes for per-category indexing
 
         # Z when clusters are used
         if cube_z is not None and self.cluster_bins > 1:
@@ -767,6 +849,12 @@ class ROIHeads3D(StandardROIHeads):
                 if valid_joint.any():
                     losses.update({prefix + 'loss_joint': self.safely_reduce_losses(loss_joint[valid_joint]) * self.loss_w_joint * self.loss_w_3d})
 
+            # Classification loss from 3D head (replaces BoxHead classification)
+            # Upweighted like DETR3D (cls weight 2.0 vs bbox weight 0.25)
+            if class_logits is not None and len(box_classes) > 0:
+                loss_cls = F.cross_entropy(class_logits, box_classes.long(), reduction='mean')
+                losses.update({prefix + 'loss_cls': loss_cls * self.loss_w_cls * self.loss_w_3d})
+
             
         '''
         Inference
@@ -786,42 +874,155 @@ class ROIHeads3D(StandardROIHeads):
         # convert the predictions to intances per image
         cube_3D = cube_3D.split(num_boxes_per_image)
         cube_pose = cube_pose.split(num_boxes_per_image)
+        
+        # Use predicted classes from class_logits during inference
+        if not self.training and class_logits is not None:
+            pred_class_probs = F.softmax(class_logits, dim=-1)
+            pred_class_scores, predicted_classes = pred_class_probs[:, :-1].max(dim=1)  # Exclude background
+            box_classes = predicted_classes
+            class_scores = pred_class_scores
+        else:
+            class_scores = None
+        
         box_classes = box_classes.split(num_boxes_per_image)
+        if class_scores is not None:
+            class_scores = class_scores.split(num_boxes_per_image)
         
         pred_instances = None
         
         pred_instances = instances if not self.training else \
             [Instances(image_size) for image_size in im_current_dims]
 
-        for cube_3D_i, cube_pose_i, instances_i, K, im_dim, im_scale_ratio, box_classes_i, pred_boxes_i in \
-            zip(cube_3D, cube_pose, pred_instances, Ks, im_current_dims, im_scales_ratio, box_classes, pred_boxes):
+        for idx, (cube_3D_i, cube_pose_i, instances_i, K, im_dim, im_scale_ratio, box_classes_i, pred_boxes_i) in \
+            enumerate(zip(cube_3D, cube_pose, pred_instances, Ks, im_current_dims, im_scales_ratio, box_classes, pred_boxes)):
             
-            # merge scores if they already exist
-            if hasattr(instances_i, 'scores'):
-                instances_i.scores = (instances_i.scores * cube_3D_i[:, -1])**(1/2)
-            
-            # assign scores if none are present
+            # Get scores: combine class scores with confidence if available
+            if class_scores is not None:
+                cls_scores_i = class_scores[idx]
+                if self.use_confidence and cube_3D_i.shape[1] > 6:
+                    # Combine class score with 3D confidence
+                    instances_i.scores = (cls_scores_i * cube_3D_i[:, -1]) ** 0.5
+                else:
+                    instances_i.scores = cls_scores_i
+            elif hasattr(instances_i, 'scores'):
+                # merge scores if they already exist
+                if self.use_confidence and cube_3D_i.shape[1] > 6:
+                    instances_i.scores = (instances_i.scores * cube_3D_i[:, -1])**(1/2)
             else:
-                instances_i.scores = cube_3D_i[:, -1]
+                # assign scores if none are present
+                if self.use_confidence and cube_3D_i.shape[1] > 6:
+                    instances_i.scores = cube_3D_i[:, -1]
+                else:
+                    instances_i.scores = torch.ones(len(cube_3D_i), device=cube_3D_i.device)
             
             # assign box classes if none exist
             if not hasattr(instances_i, 'pred_classes'):
                 instances_i.pred_classes = box_classes_i
 
-            # assign predicted boxes if none exist    
-            if not hasattr(instances_i, 'pred_boxes'):
-                instances_i.pred_boxes = pred_boxes_i
-
-            instances_i.pred_bbox3D = util.get_cuboid_verts_faces(cube_3D_i[:, :6], cube_pose_i)[0]
+            # Compute 3D corners
+            pred_bbox3D = util.get_cuboid_verts_faces(cube_3D_i[:, :6], cube_pose_i)[0]
+            instances_i.pred_bbox3D = pred_bbox3D
             instances_i.pred_center_cam = cube_3D_i[:, :3]
             instances_i.pred_center_2D = cube_3D_i[:, 6:8]
             instances_i.pred_dimensions = cube_3D_i[:, 3:6]
             instances_i.pred_pose = cube_pose_i
+            
+            # Compute proper 2D boxes by projecting 3D corners
+            # K is already at original scale (im_scale_ratio accounted for in cube_xy)
+            K_scaled = K / im_scale_ratio
+            K_scaled[2, 2] = 1.0
+            
+            if len(pred_bbox3D) > 0:
+                # pred_bbox3D: (N, 8, 3) - 8 corners per box
+                # Project corners to 2D
+                corners_3d = pred_bbox3D  # (N, 8, 3)
+                # Project: u = fx * X/Z + cx, v = fy * Y/Z + cy
+                fx, fy = K_scaled[0, 0], K_scaled[1, 1]
+                cx, cy = K_scaled[0, 2], K_scaled[1, 2]
+                
+                Z = corners_3d[:, :, 2].clamp(min=0.1)  # Avoid division by zero
+                u = fx * corners_3d[:, :, 0] / Z + cx  # (N, 8)
+                v = fy * corners_3d[:, :, 1] / Z + cy  # (N, 8)
+                
+                # Get 2D bounding box from projected corners
+                x1 = u.min(dim=1).values
+                y1 = v.min(dim=1).values
+                x2 = u.max(dim=1).values
+                y2 = v.max(dim=1).values
+                
+                # Clamp to image bounds
+                h, w = im_dim
+                x1 = x1.clamp(min=0, max=w)
+                y1 = y1.clamp(min=0, max=h)
+                x2 = x2.clamp(min=0, max=w)
+                y2 = y2.clamp(min=0, max=h)
+                
+                pred_boxes_2d = torch.stack([x1, y1, x2, y2], dim=1)
+                instances_i.pred_boxes = Boxes(pred_boxes_2d)
+            else:
+                # No predictions, use empty boxes
+                instances_i.pred_boxes = Boxes(torch.zeros((0, 4), device=cube_3D_i.device))
 
         if self.training:
             return pred_instances, losses
         else:
-            return pred_instances
+            # Apply score filtering and NMS during inference
+            filtered_instances = []
+            for instances_i in pred_instances:
+                if len(instances_i) == 0:
+                    filtered_instances.append(instances_i)
+                    continue
+                
+                scores = instances_i.scores
+                pred_boxes = instances_i.pred_boxes.tensor
+                pred_classes = instances_i.pred_classes
+                
+                # Filter by score threshold
+                keep_mask = scores > self.test_score_thresh
+                
+                if keep_mask.sum() == 0:
+                    # No predictions pass threshold, return empty
+                    empty_inst = Instances(instances_i.image_size)
+                    empty_inst.pred_boxes = Boxes(torch.zeros((0, 4), device=scores.device))
+                    empty_inst.scores = torch.zeros(0, device=scores.device)
+                    empty_inst.pred_classes = torch.zeros(0, dtype=torch.long, device=scores.device)
+                    empty_inst.pred_bbox3D = torch.zeros((0, 8, 3), device=scores.device)
+                    empty_inst.pred_center_cam = torch.zeros((0, 3), device=scores.device)
+                    empty_inst.pred_center_2D = torch.zeros((0, 2), device=scores.device)
+                    empty_inst.pred_dimensions = torch.zeros((0, 3), device=scores.device)
+                    empty_inst.pred_pose = torch.zeros((0, 3, 3), device=scores.device)
+                    filtered_instances.append(empty_inst)
+                    continue
+                
+                # Apply NMS per class
+                keep = batched_nms(
+                    pred_boxes[keep_mask],
+                    scores[keep_mask],
+                    pred_classes[keep_mask],
+                    self.test_nms_thresh
+                )
+                
+                # Limit to topk
+                if self.test_topk_per_image >= 0:
+                    keep = keep[:self.test_topk_per_image]
+                
+                # Get indices in original tensor
+                keep_indices = torch.where(keep_mask)[0][keep]
+                
+                # Create filtered instance
+                filtered_inst = Instances(instances_i.image_size)
+                filtered_inst.pred_boxes = Boxes(pred_boxes[keep_indices])
+                filtered_inst.scores = scores[keep_indices]
+                filtered_inst.pred_classes = pred_classes[keep_indices]
+                filtered_inst.pred_bbox3D = instances_i.pred_bbox3D[keep_indices]
+                filtered_inst.pred_center_cam = instances_i.pred_center_cam[keep_indices]
+                filtered_inst.pred_center_2D = instances_i.pred_center_2D[keep_indices]
+                filtered_inst.pred_dimensions = instances_i.pred_dimensions[keep_indices]
+                filtered_inst.pred_pose = instances_i.pred_pose[keep_indices]
+                
+                filtered_instances.append(filtered_inst)
+            
+            return filtered_instances
 
     def _sample_proposals(
         self, matched_idxs: torch.Tensor, matched_labels: torch.Tensor, gt_classes: torch.Tensor, matched_ious=None

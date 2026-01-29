@@ -48,9 +48,9 @@ DG:
     ENABLED: False
 
 # Training settings - gated fusion + augmentation
-SOLVER:
-  IMS_PER_BATCH: 16
-  BASE_LR: 0.01
-  MAX_ITER: 200000
+# SOLVER:
+#   IMS_PER_BATCH: 16
+#   BASE_LR: 0.01
+#   MAX_ITER: 200000
 
 OUTPUT_DIR: "./output/04_rgbd_fsdr"

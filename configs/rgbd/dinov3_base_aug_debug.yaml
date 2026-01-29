@@ -1,0 +1,37 @@
+# =============================================================================
+# DINOv3 + DETR3D Debug Configuration
+# =============================================================================
+# Inherits from dinov3_base_aug.yaml but uses sampled dataset (500 samples)
+# For quick iteration and debugging
+# =============================================================================
+
+_BASE_: "dinov3_base_aug.yaml"
+
+# ===========================================================================
+# Training Parameters - Adjusted for 500 samples
+# ===========================================================================
+SOLVER:
+  MAX_ITER: 325  # 500 samples / 40 batch * 26 epochs = 325 iters
+  
+  # LR Schedule (same proportions as main config)
+  BASE_LR: 0.0001
+  WARMUP_ITERS: 13  # ~1 epoch (500 / 40 = 12.5 iters)
+  
+  # Checkpointing (every epoch)
+  CHECKPOINT_PERIOD: 13  # Save every epoch (500 / 40 = 13 iters)
+
+# ===========================================================================
+# Test Settings
+# ===========================================================================
+TEST:
+  EVAL_PERIOD: 13  # Validate every epoch (13 iters)
+  VAL_SPLIT: 0.2  # 20% of training data for validation split
+  FULL_EVAL_PERIOD: 130  # ~10 epochs for full evaluation on all test sets (13 * 10)
+
+# ===========================================================================
+# Dataset Configuration - Use sampled training data
+# ===========================================================================
+DATASETS:
+  TRAIN_MANIFEST: "hypersim_train_sampled.json"
+
+OUTPUT_DIR: "./output/dinov3_base_aug_debug"

@@ -165,6 +165,10 @@ class Omni3D(COCO):
             assert type(dataset)==dict, 'annotation file format {} not supported'.format(type(dataset))
             print('Done (t={:0.2f}s)'.format(time.time()- tic))
 
+            # Handle missing 'info' field (e.g., RGBD manifests)
+            if 'info' not in dataset:
+                dataset['info'] = {'description': name, 'version': '1.0'}
+            
             if type(dataset['info']) == list:
                 dataset['info'] = dataset['info'][0]
                 

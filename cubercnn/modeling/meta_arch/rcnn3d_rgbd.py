@@ -8,6 +8,7 @@ This extends the base RCNN3D to:
 2. Use a dual-stream backbone for modality-specific feature extraction
 3. Fuse RGB and depth features before passing to FPN/RPN/ROI heads
 4. Support domain generalization via frozen/partially-frozen encoders
+5. Optional auxiliary branch for self-supervised depth completion
 """
 from typing import Dict, List, Optional, Tuple
 import torch
@@ -26,6 +27,7 @@ from detectron2.modeling.meta_arch import META_ARCH_REGISTRY, GeneralizedRCNN
 
 from cubercnn.modeling.roi_heads import build_roi_heads
 from cubercnn.modeling.backbone import build_simple_dual_encoder_backbone
+from cubercnn.modeling.auxiliary_heads import AuxiliaryBranch
 from cubercnn import util, vis
 
 from pytorch3d.transforms import rotation_6d_to_matrix
@@ -51,20 +53,25 @@ class RCNN3D_RGBD(GeneralizedRCNN):
     
     def __init__(
         self,
+        cfg=None,
+        priors=None,
         *,
-        backbone: Backbone,
-        proposal_generator,
-        roi_heads,
-        pixel_mean: Tuple[float],
-        pixel_std: Tuple[float],
+        backbone: Backbone = None,
+        proposal_generator=None,
+        roi_heads=None,
+        pixel_mean: Tuple[float] = None,
+        pixel_std: Tuple[float] = None,
         input_format: str = "BGR",
         vis_period: int = 0,
         depth_pixel_mean: float = 0.0,
         depth_pixel_std: float = 1.0,
+        auxiliary_branch: Optional[AuxiliaryBranch] = None,
     ):
         """Initialize RCNN3D_RGBD.
         
         Args:
+            cfg: Detectron2 config (for registry-based construction)
+            priors: Optional priors for CubeHead
             backbone: Feature extractor backbone (dual encoder or standard)
             proposal_generator: RPN for proposal generation
             roi_heads: ROI heads for 3D box prediction
@@ -74,7 +81,23 @@ class RCNN3D_RGBD(GeneralizedRCNN):
             vis_period: Visualization period (0 = disabled)
             depth_pixel_mean: Mean for depth normalization
             depth_pixel_std: Std for depth normalization
+            auxiliary_branch: Optional auxiliary branch for self-supervised tasks
         """
+        # Handle registry-based construction where cfg is passed
+        if cfg is not None and backbone is None:
+            # Build from config using classmethod
+            config_dict = RCNN3D_RGBD.from_config(cfg, priors=priors)
+            backbone = config_dict["backbone"]
+            proposal_generator = config_dict["proposal_generator"]
+            roi_heads = config_dict["roi_heads"]
+            pixel_mean = config_dict["pixel_mean"]
+            pixel_std = config_dict["pixel_std"]
+            input_format = config_dict["input_format"]
+            vis_period = config_dict["vis_period"]
+            depth_pixel_mean = config_dict["depth_pixel_mean"]
+            depth_pixel_std = config_dict["depth_pixel_std"]
+            auxiliary_branch = config_dict.get("auxiliary_branch")
+        
         super().__init__(
             backbone=backbone,
             proposal_generator=proposal_generator,
@@ -96,6 +119,9 @@ class RCNN3D_RGBD(GeneralizedRCNN):
             torch.tensor([depth_pixel_std]).view(-1, 1, 1), 
             False
         )
+        
+        # Auxiliary branch for self-supervised learning
+        self.auxiliary_branch = auxiliary_branch
     
     @classmethod
     def from_config(cls, cfg, priors=None):
@@ -110,6 +136,12 @@ class RCNN3D_RGBD(GeneralizedRCNN):
         """
         backbone = build_backbone_rgbd(cfg, priors=priors)
         
+        # Build auxiliary branch if enabled
+        auxiliary_branch = None
+        dc_cfg = getattr(cfg.MODEL, 'DEPTH_COMPLETION', None)
+        if dc_cfg is not None and getattr(dc_cfg, 'ENABLED', False):
+            auxiliary_branch = AuxiliaryBranch.from_config(cfg)
+        
         return {
             "backbone": backbone,
             "proposal_generator": build_proposal_generator(cfg, backbone.output_shape()),
@@ -120,6 +152,7 @@ class RCNN3D_RGBD(GeneralizedRCNN):
             "pixel_std": cfg.MODEL.PIXEL_STD,
             "depth_pixel_mean": getattr(cfg.MODEL, 'DEPTH_PIXEL_MEAN', 0.0),
             "depth_pixel_std": getattr(cfg.MODEL, 'DEPTH_PIXEL_STD', 1.0),
+            "auxiliary_branch": auxiliary_branch,
         }
     
     def preprocess_image(self, batched_inputs: List[Dict]) -> Tuple[ImageList, Optional[torch.Tensor]]:
@@ -173,6 +206,12 @@ class RCNN3D_RGBD(GeneralizedRCNN):
         # Preprocess inputs
         images, depths = self.preprocess_image(batched_inputs)
         
+        # Store original depth for auxiliary tasks (before normalization was applied in preprocess)
+        original_depths = None
+        if "depth" in batched_inputs[0] and self.auxiliary_branch is not None:
+            # Get raw depths for auxiliary supervision
+            original_depths = torch.stack([x["depth"].to(self.device) for x in batched_inputs])
+        
         # Compute scaling factors
         im_scales_ratio = [
             info['height'] / im.shape[1] 
@@ -189,31 +228,55 @@ class RCNN3D_RGBD(GeneralizedRCNN):
             gt_instances = None
         
         # Extract features (backbone handles RGB-D fusion internally)
+        # Request both RGB-only and fused features for separate 2D/3D paths
         if hasattr(self.backbone, 'forward') and depths is not None:
-            # Check if backbone accepts depth
             import inspect
             sig = inspect.signature(self.backbone.forward)
-            if 'depth' in sig.parameters:
+            if 'depth' in sig.parameters and 'return_rgb_only' in sig.parameters:
+                # New dual-output mode: RGB-only for 2D, fused for 3D
+                feature_dict = self.backbone(images.tensor, depth=depths, return_rgb_only=True)
+                rgb_features = feature_dict['rgb']      # For RPN and BoxHead
+                fused_features = feature_dict['fused']  # For CubeHead (3D)
+            elif 'depth' in sig.parameters:
                 features = self.backbone(images.tensor, depth=depths)
+                rgb_features = features
+                fused_features = features
             else:
-                # Backbone doesn't support depth, concatenate to image channels
-                # This is a fallback for standard backbones
                 combined = torch.cat([images.tensor, depths], dim=1)
                 features = self.backbone(combined)
+                rgb_features = features
+                fused_features = features
         else:
             features = self.backbone(images.tensor)
+            rgb_features = features
+            fused_features = features
         
-        # Generate proposals
+        # Generate proposals using RGB-only features (like original CubeRCNN)
         proposals, proposal_losses = self.proposal_generator(
-            images, features, gt_instances
+            images, rgb_features, gt_instances
         )
         
         # ROI heads for 3D detection
+        # Pass both feature sets - BoxHead uses rgb_features, CubeHead uses fused_features
         instances, detector_losses = self.roi_heads(
-            images, features, proposals,
+            images, rgb_features, proposals,
             Ks, im_scales_ratio,
-            gt_instances
+            gt_instances,
+            fused_features=fused_features  # Pass fused features for 3D head
         )
+        
+        # Auxiliary branch losses
+        auxiliary_losses = {}
+        if self.auxiliary_branch is not None and original_depths is not None:
+            aux_outputs = self.auxiliary_branch(
+                depth_images=original_depths,
+                fpn_features=features,
+                feature_key="p2",  # Use p2 level for depth completion
+            )
+            # Extract auxiliary losses
+            for key, value in aux_outputs.items():
+                if key.startswith("loss_"):
+                    auxiliary_losses[key] = value
         
         # Visualization
         if self.vis_period > 0:
@@ -225,6 +288,7 @@ class RCNN3D_RGBD(GeneralizedRCNN):
         losses = {}
         losses.update(detector_losses)
         losses.update(proposal_losses)
+        losses.update(auxiliary_losses)
         
         return losses
     
@@ -258,29 +322,42 @@ class RCNN3D_RGBD(GeneralizedRCNN):
         # Get camera intrinsics  
         Ks = [torch.FloatTensor(info['K']) for info in batched_inputs]
         
-        # Extract features
+        # Extract features (RGB-only for 2D, fused for 3D)
         if hasattr(self.backbone, 'forward') and depths is not None:
             import inspect
             sig = inspect.signature(self.backbone.forward)
-            if 'depth' in sig.parameters:
+            if 'depth' in sig.parameters and 'return_rgb_only' in sig.parameters:
+                # New dual-output mode
+                feature_dict = self.backbone(images.tensor, depth=depths, return_rgb_only=True)
+                rgb_features = feature_dict['rgb']
+                fused_features = feature_dict['fused']
+            elif 'depth' in sig.parameters:
                 features = self.backbone(images.tensor, depth=depths)
+                rgb_features = features
+                fused_features = features
             else:
                 combined = torch.cat([images.tensor, depths], dim=1)
                 features = self.backbone(combined)
+                rgb_features = features
+                fused_features = features
         else:
             features = self.backbone(images.tensor)
+            rgb_features = features
+            fused_features = features
         
         # Pass oracle 2D boxes into the RoI heads if provided
         if type(batched_inputs == list) and np.any(['oracle2D' in b for b in batched_inputs]):
             oracles = [b['oracle2D'] for b in batched_inputs]
             results, _ = self.roi_heads(
-                images, features, oracles, Ks, im_scales_ratio, None
+                images, rgb_features, oracles, Ks, im_scales_ratio, None,
+                fused_features=fused_features
             )
         else:
             # Normal inference: generate proposals then detect
-            proposals, _ = self.proposal_generator(images, features, None)
+            proposals, _ = self.proposal_generator(images, rgb_features, None)
             results, _ = self.roi_heads(
-                images, features, proposals, Ks, im_scales_ratio, None
+                images, rgb_features, proposals, Ks, im_scales_ratio, None,
+                fused_features=fused_features
             )
         
         if do_postprocess:

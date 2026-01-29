@@ -1,0 +1,27 @@
+# =============================================================================
+# DINOv3 + Gated Fusion + Auxiliary Depth Completion
+# =============================================================================
+# Progressive config: base_aug + gated fusion + auxiliary depth completion task
+#
+# Depth completion as auxiliary task:
+# - Self-supervised signal from depth sensor
+# - Encourages encoder to learn depth-aware representations
+# - Uses sparse depth input, predicts dense depth
+# =============================================================================
+
+_BASE_: "dinov3_gated_fusion.yaml"
+
+# Enable Depth Completion auxiliary task
+MODEL:
+  DEPTH_COMPLETION:
+    ENABLED: True
+    FEATURE_DIM: 256
+    NUM_DECODER_LAYERS: 4
+    USE_SKIP_CONNECTIONS: True
+    SPARSITY: 0.1        # Keep 10% of pixels as input
+    SPARSITY_MIN: 0.05   # Min for augmentation
+    SPARSITY_MAX: 0.2    # Max for augmentation
+    LOSS_TYPE: "l1"
+    LOSS_WEIGHT: 1.0
+
+OUTPUT_DIR: "./output/dinov3_gated_depth_completion"

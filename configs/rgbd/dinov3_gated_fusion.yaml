@@ -1,0 +1,18 @@
+# =============================================================================
+# DINOv3 + MAE-style Gated Fusion
+# =============================================================================
+# Progressive config: base_aug + MAE-style fusion with gating
+# 
+# MAE-style gated fusion learns to weight RGB vs depth features adaptively
+# per spatial location, similar to how MAE learns to reconstruct from partial
+# observations.
+# =============================================================================
+
+_BASE_: "dinov3_base_aug.yaml"
+
+MODEL:
+  BACKBONE:
+    # Use gated fusion instead of simple concat
+    FUSION_TYPE: "gated"
+
+OUTPUT_DIR: "./output/dinov3_gated_fusion"

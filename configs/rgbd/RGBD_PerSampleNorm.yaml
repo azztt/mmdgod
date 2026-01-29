@@ -1,0 +1,40 @@
+# RGB-D training with per-sample depth normalization for domain generalization
+# This config makes the depth input domain-invariant by normalizing per-image
+# instead of using a fixed depth_max
+
+_BASE_: "Base_RGBD.yaml"
+
+MODEL:
+  # Per-sample depth normalization (domain-invariant)
+  # Options: "fixed" (use DEPTH_MAX), "per_sample" (z-score per image), "percentile"
+  DEPTH_NORM_MODE: "per_sample"
+  
+  # DEPTH_MAX is used as fallback when per-sample fails (e.g., mostly invalid pixels)
+  DEPTH_MAX: 20.0
+
+# Enable augmentations for domain generalization
+AUG:
+  ENABLED: True
+  COLOR_JITTER:
+    ENABLED: True
+    BRIGHTNESS: 0.4
+    CONTRAST: 0.4
+    SATURATION: 0.4
+    HUE: 0.1
+    PROBABILITY: 0.8
+  GAUSSIAN_NOISE:
+    ENABLED: True
+    STD_RANGE: [0.01, 0.05]
+    PROBABILITY: 0.5
+  DEPTH_DROPOUT:
+    ENABLED: True
+    PROBABILITY: 0.3
+    NUM_DROPS: [1, 5]
+    DROP_SIZE: [0.02, 0.1]
+  DEPTH_NOISE:
+    ENABLED: True
+    PROBABILITY: 0.5
+    STD_RANGE: [0.01, 0.03]
+
+# Output directory
+OUTPUT_DIR: "./output/rgbd_persample_norm"

@@ -1,0 +1,23 @@
+# =============================================================================
+# DINOv3 + Gated Fusion + FSDR
+# =============================================================================
+# Progressive config: base_aug + gated fusion + Frequency Space Domain Randomization
+#
+# FSDR performs domain randomization in the frequency domain, which helps
+# the model generalize to unseen domains by learning invariant features.
+# =============================================================================
+
+_BASE_: "dinov3_gated_fusion.yaml"
+
+# Enable Domain Generalization
+DG:
+  ENABLED: True
+  
+  # Frequency Space Domain Randomization
+  FSDR:
+    ENABLED: True
+    PROBABILITY: 0.5
+    VARIANT_BANDS: [[0, 2], [32, 64]]  # Low and mid-frequency bands
+    BLOCK_SIZE: 64
+
+OUTPUT_DIR: "./output/dinov3_gated_fsdr"

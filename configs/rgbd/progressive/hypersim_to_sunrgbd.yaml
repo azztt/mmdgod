@@ -17,8 +17,9 @@ DATASETS:
   # MANIFEST_ROOT: /mnt/data/users/anweshan/omni3d/data/unidet3d_format/cleaned_manifests
   
   # Train on Hypersim (synthetic indoor)
+  # Use sampled manifest for faster debugging (500 images)
   TRAIN: ("hypersim_train_rgbd",)
-  TRAIN_MANIFEST: "hypersim_train_filtered.json"
+  TRAIN_MANIFEST: "hypersim_train_sampled.json"  # Switch to hypersim_train_filtered.json for full training
   
   # Evaluate on SUNRGBD (real indoor) for domain transfer assessment
   VAL: ("sunrgbd_val_rgbd",)

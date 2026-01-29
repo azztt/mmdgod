@@ -1,0 +1,57 @@
+# Configuration with basic augmentations enabled
+# Inherits from Base_RGBD.yaml and adds standard augmentations
+
+_BASE_: "Base_RGBD.yaml"
+
+# ===========================================================================
+# Basic Augmentations
+# ===========================================================================
+# These are standard augmentations that don't require domain knowledge
+# and are commonly used for improving generalization.
+
+AUG:
+  ENABLED: True  # Use DatasetMapper3D_RGBD_DG instead of base mapper
+  
+  # Color Jitter (RGB only)
+  # Randomly changes brightness, contrast, saturation, hue
+  COLOR_JITTER:
+    ENABLED: True
+    PROBABILITY: 0.8
+    BRIGHTNESS: 0.4
+    CONTRAST: 0.4
+    SATURATION: 0.4
+    HUE: 0.1
+  
+  # Gaussian Noise (RGB)
+  # Adds random Gaussian noise to simulate sensor noise
+  GAUSSIAN_NOISE:
+    ENABLED: True
+    PROBABILITY: 0.5
+    STD_RANGE: [0.01, 0.05]  # Noise std as fraction of [0,1] range
+  
+  # Depth Dropout
+  # Randomly drops rectangular regions in depth to simulate missing data
+  DEPTH_DROPOUT:
+    ENABLED: True
+    PROBABILITY: 0.3
+    NUM_DROPS: [1, 5]        # Number of dropout regions
+    DROP_SIZE: [0.02, 0.1]   # Size as fraction of image dimensions
+  
+  # Depth Gaussian Noise
+  # Adds noise to depth values to simulate sensor noise
+  DEPTH_NOISE:
+    ENABLED: True
+    PROBABILITY: 0.5
+    STD_RANGE: [0.01, 0.03]  # Noise std in meters
+
+# Note: Random horizontal flip is already enabled in Base_RGBD.yaml via
+# INPUT.RANDOM_FLIP = "horizontal" (detectron2 default)
+
+# Domain Generalization augmentations (disabled by default here)
+DG:
+  FSDR:
+    ENABLED: False  # Enable in separate DG config
+  OBJECT_STYLE_SWAP:
+    ENABLED: False  # Enable in separate DG config
+
+OUTPUT_DIR: "./output/rgbd_basic_aug"

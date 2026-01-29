@@ -37,6 +37,7 @@ class DatasetMapper3D_RGBD(DatasetMapper):
         augmentations: List of augmentation transforms
         depth_max: Maximum depth value for normalization (default: 8.0)
         depth_normalize: Whether to normalize depth to [-1, 1] (default: True)
+        depth_norm_mode: Normalization mode - "fixed", "per_sample", or "percentile"
     """
     
     def __init__(
@@ -46,7 +47,13 @@ class DatasetMapper3D_RGBD(DatasetMapper):
         augmentations: list = None,
         depth_max: float = 8.0,
         depth_normalize: bool = True,
+        depth_norm_mode: str = "fixed",
+        depth_norm_percentile: float = 95,
     ):
+        # Build default augmentations if none provided
+        if augmentations is None:
+            augmentations = self._build_default_augmentations(cfg, is_train)
+        
         super().__init__(
             is_train=is_train,
             augmentations=augmentations,
@@ -57,6 +64,8 @@ class DatasetMapper3D_RGBD(DatasetMapper):
         
         self.depth_max = depth_max
         self.depth_normalize = depth_normalize
+        self.depth_norm_mode = depth_norm_mode
+        self.depth_norm_percentile = depth_norm_percentile
         self.cfg = cfg
         
         # Dataset-specific unknown categories
@@ -64,6 +73,45 @@ class DatasetMapper3D_RGBD(DatasetMapper):
             self.dataset_id_to_unknown_cats = cfg.DATASETS.DATASET_ID_TO_UNKNOWN_CATS
         else:
             self.dataset_id_to_unknown_cats = {}
+    
+    @staticmethod
+    def _build_default_augmentations(cfg, is_train: bool):
+        """Build default augmentations for RGB-D data.
+        
+        Args:
+            cfg: Detectron2 config
+            is_train: Whether in training mode
+            
+        Returns:
+            List of augmentation transforms
+        """
+        import detectron2.data.transforms as T
+        
+        if is_train:
+            min_size = cfg.INPUT.MIN_SIZE_TRAIN
+            max_size = cfg.INPUT.MAX_SIZE_TRAIN
+            sample_style = cfg.INPUT.MIN_SIZE_TRAIN_SAMPLING if hasattr(cfg.INPUT, 'MIN_SIZE_TRAIN_SAMPLING') else "choice"
+            
+            augmentations = [
+                T.ResizeShortestEdge(min_size, max_size, sample_style),
+            ]
+            
+            # Add horizontal flip if enabled
+            if hasattr(cfg.INPUT, 'RANDOM_FLIP') and cfg.INPUT.RANDOM_FLIP != "none":
+                augmentations.append(
+                    T.RandomFlip(
+                        horizontal=cfg.INPUT.RANDOM_FLIP == "horizontal",
+                        vertical=cfg.INPUT.RANDOM_FLIP == "vertical",
+                    )
+                )
+        else:
+            min_size = cfg.INPUT.MIN_SIZE_TEST
+            max_size = cfg.INPUT.MAX_SIZE_TEST
+            augmentations = [
+                T.ResizeShortestEdge(min_size, max_size, "choice"),
+            ]
+        
+        return augmentations
     
     def _load_depth(self, depth_path: str) -> np.ndarray:
         """Load depth map from file.
@@ -121,26 +169,83 @@ class DatasetMapper3D_RGBD(DatasetMapper):
         
         return depth
     
-    def _process_depth(self, depth: np.ndarray) -> np.ndarray:
+    def _process_depth(self, depth: np.ndarray) -> tuple:
         """Process depth map: clip, normalize, and convert to tensor format.
+        
+        Supports multiple normalization modes for domain generalization:
+        - "fixed": Use fixed depth_max to normalize (default, domain-specific)
+        - "per_sample": Z-score normalization per image (domain-invariant)
+        - "percentile": Normalize by per-image percentile (robust to outliers)
         
         Args:
             depth: (H, W) depth array in meters
             
         Returns:
             depth: (1, H, W) processed depth tensor-ready array
+            depth_stats: dict with normalization stats (for inverse transform)
         """
-        # Clip to max depth
-        depth = np.clip(depth, 0.0, self.depth_max)
+        # Get valid depth mask (non-zero)
+        valid_mask = depth > 0.01  # Ignore very small values as invalid
         
-        # Normalize to [-1, 1] if requested
-        if self.depth_normalize:
-            depth = (depth / self.depth_max) * 2.0 - 1.0
+        depth_stats = {}
+        
+        if self.depth_norm_mode == "per_sample":
+            # Z-score normalization: (x - mean) / std
+            # This makes the depth distribution domain-invariant
+            if valid_mask.sum() > 100:  # Need enough valid pixels
+                depth_mean = depth[valid_mask].mean()
+                depth_std = depth[valid_mask].std()
+                if depth_std < 0.01:  # Avoid division by zero
+                    depth_std = 1.0
+            else:
+                depth_mean = self.depth_max / 2.0
+                depth_std = self.depth_max / 4.0
+            
+            depth_stats['mean'] = depth_mean
+            depth_stats['std'] = depth_std
+            depth_stats['mode'] = 'per_sample'
+            
+            # Normalize: z-score then scale to [-1, 1] range
+            # Assuming 3 std covers most values
+            depth_normalized = (depth - depth_mean) / depth_std
+            depth_normalized = np.clip(depth_normalized / 3.0, -1.0, 1.0)
+            depth = depth_normalized
+            
+        elif self.depth_norm_mode == "percentile":
+            # Percentile normalization: robust to outliers
+            if valid_mask.sum() > 100:
+                depth_p95 = np.percentile(depth[valid_mask], self.depth_norm_percentile)
+                depth_p5 = np.percentile(depth[valid_mask], 100 - self.depth_norm_percentile)
+            else:
+                depth_p95 = self.depth_max
+                depth_p5 = 0.0
+            
+            depth_stats['p5'] = depth_p5
+            depth_stats['p95'] = depth_p95
+            depth_stats['mode'] = 'percentile'
+            
+            # Clip and normalize to [-1, 1]
+            depth = np.clip(depth, depth_p5, depth_p95)
+            if depth_p95 - depth_p5 > 0.01:
+                depth = (depth - depth_p5) / (depth_p95 - depth_p5) * 2.0 - 1.0
+            else:
+                depth = np.zeros_like(depth)
+                
+        else:  # "fixed" mode (default)
+            depth_stats['max'] = self.depth_max
+            depth_stats['mode'] = 'fixed'
+            
+            # Clip to max depth
+            depth = np.clip(depth, 0.0, self.depth_max)
+            
+            # Normalize to [-1, 1] if requested
+            if self.depth_normalize:
+                depth = (depth / self.depth_max) * 2.0 - 1.0
         
         # Add channel dimension: (H, W) -> (1, H, W)
         depth = depth[np.newaxis, :, :]
         
-        return depth
+        return depth, depth_stats
     
     def _apply_geometric_transforms_to_depth(
         self, 
@@ -232,7 +337,7 @@ class DatasetMapper3D_RGBD(DatasetMapper):
         depth = self._apply_geometric_transforms_to_depth(depth, transforms)
         
         # Process depth (clip, normalize, add channel)
-        depth = self._process_depth(depth if depth.ndim == 2 else depth[0])
+        depth, depth_stats = self._process_depth(depth if depth.ndim == 2 else depth[0])
         
         image_shape = image.shape[:2]  # h, w
         
@@ -243,6 +348,9 @@ class DatasetMapper3D_RGBD(DatasetMapper):
         dataset_dict["depth"] = torch.as_tensor(
             np.ascontiguousarray(depth)
         )
+        
+        # Store depth normalization stats for potential inverse transform
+        dataset_dict["depth_stats"] = depth_stats
         
         # At inference, no need for additional processing
         if not self.is_train:
@@ -275,7 +383,8 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
     Adds domain generalization specific augmentations:
     - FSDR: Frequency Space Domain Randomization
     - Object Style Swap: Object-wise appearance transfer
-    - Photometric jitter
+    - Photometric jitter (ColorJitter)
+    - Gaussian noise (RGB and depth)
     - Depth noise/dropout
     - Scene-aware augmentations
     
@@ -285,14 +394,8 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
         augmentations: List of augmentation transforms
         depth_max: Maximum depth value
         depth_normalize: Whether to normalize depth
-        use_fsdr: Enable FSDR augmentation
-        fsdr_prob: Probability of applying FSDR
-        use_object_style_swap: Enable object style swap augmentation
-        object_style_swap_prob: Per-object probability
-        use_depth_dropout: Enable depth dropout
-        depth_dropout_prob: Probability of depth dropout
-        use_photometric: Enable photometric jitter
-        photometric_prob: Probability of photometric jitter
+        depth_norm_mode: Normalization mode - "fixed", "per_sample", or "percentile"
+        depth_norm_percentile: Percentile for percentile normalization
     """
     
     def __init__(
@@ -302,14 +405,8 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
         augmentations: list = None,
         depth_max: float = 8.0,
         depth_normalize: bool = True,
-        use_fsdr: bool = True,
-        fsdr_prob: float = 0.5,
-        use_object_style_swap: bool = False,
-        object_style_swap_prob: float = 0.3,
-        use_depth_dropout: bool = True,
-        depth_dropout_prob: float = 0.3,
-        use_photometric: bool = True,
-        photometric_prob: float = 0.8,
+        depth_norm_mode: str = "fixed",
+        depth_norm_percentile: float = 95,
     ):
         super().__init__(
             cfg=cfg,
@@ -317,24 +414,89 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
             augmentations=augmentations,
             depth_max=depth_max,
             depth_normalize=depth_normalize,
+            depth_norm_mode=depth_norm_mode,
+            depth_norm_percentile=depth_norm_percentile,
         )
         
-        self.use_fsdr = use_fsdr
-        self.fsdr_prob = fsdr_prob
-        self.use_object_style_swap = use_object_style_swap
-        self.object_style_swap_prob = object_style_swap_prob
-        self.use_depth_dropout = use_depth_dropout
-        self.depth_dropout_prob = depth_dropout_prob
-        self.use_photometric = use_photometric
-        self.photometric_prob = photometric_prob
+        # Read augmentation settings from config
+        aug_cfg = getattr(cfg, 'AUG', None)
+        dg_cfg = getattr(cfg, 'DG', None)
+        
+        # FSDR settings
+        self.use_fsdr = False
+        self.fsdr_prob = 0.5
+        if dg_cfg is not None:
+            fsdr_cfg = getattr(dg_cfg, 'FSDR', None)
+            if fsdr_cfg is not None:
+                self.use_fsdr = getattr(fsdr_cfg, 'ENABLED', False)
+                self.fsdr_prob = getattr(fsdr_cfg, 'PROBABILITY', 0.5)
+        
+        # Object Style Swap settings
+        self.use_object_style_swap = False
+        self.object_style_swap_prob = 0.3
+        if dg_cfg is not None:
+            oss_cfg = getattr(dg_cfg, 'OBJECT_STYLE_SWAP', None)
+            if oss_cfg is not None:
+                self.use_object_style_swap = getattr(oss_cfg, 'ENABLED', False)
+        
+        # Color jitter settings
+        self.use_photometric = False
+        self.photometric_prob = 0.8
+        self.color_jitter_params = {'brightness': 0.4, 'contrast': 0.4, 'saturation': 0.4, 'hue': 0.1}
+        if aug_cfg is not None:
+            cj_cfg = getattr(aug_cfg, 'COLOR_JITTER', None)
+            if cj_cfg is not None:
+                self.use_photometric = getattr(cj_cfg, 'ENABLED', False)
+                self.photometric_prob = getattr(cj_cfg, 'PROBABILITY', 0.8)
+                self.color_jitter_params = {
+                    'brightness': getattr(cj_cfg, 'BRIGHTNESS', 0.4),
+                    'contrast': getattr(cj_cfg, 'CONTRAST', 0.4),
+                    'saturation': getattr(cj_cfg, 'SATURATION', 0.4),
+                    'hue': getattr(cj_cfg, 'HUE', 0.1),
+                }
+        
+        # Gaussian noise settings (RGB)
+        self.use_gaussian_noise = False
+        self.gaussian_noise_prob = 0.5
+        self.gaussian_noise_std_range = [0.01, 0.05]
+        if aug_cfg is not None:
+            gn_cfg = getattr(aug_cfg, 'GAUSSIAN_NOISE', None)
+            if gn_cfg is not None:
+                self.use_gaussian_noise = getattr(gn_cfg, 'ENABLED', False)
+                self.gaussian_noise_prob = getattr(gn_cfg, 'PROBABILITY', 0.5)
+                self.gaussian_noise_std_range = list(getattr(gn_cfg, 'STD_RANGE', [0.01, 0.05]))
+        
+        # Depth dropout settings
+        self.use_depth_dropout = False
+        self.depth_dropout_prob = 0.3
+        self.depth_dropout_num_drops = [1, 5]
+        self.depth_dropout_size = [0.02, 0.1]
+        if aug_cfg is not None:
+            dd_cfg = getattr(aug_cfg, 'DEPTH_DROPOUT', None)
+            if dd_cfg is not None:
+                self.use_depth_dropout = getattr(dd_cfg, 'ENABLED', False)
+                self.depth_dropout_prob = getattr(dd_cfg, 'PROBABILITY', 0.3)
+                self.depth_dropout_num_drops = list(getattr(dd_cfg, 'NUM_DROPS', [1, 5]))
+                self.depth_dropout_size = list(getattr(dd_cfg, 'DROP_SIZE', [0.02, 0.1]))
+        
+        # Depth noise settings
+        self.use_depth_noise = False
+        self.depth_noise_prob = 0.5
+        self.depth_noise_std_range = [0.01, 0.03]
+        if aug_cfg is not None:
+            dn_cfg = getattr(aug_cfg, 'DEPTH_NOISE', None)
+            if dn_cfg is not None:
+                self.use_depth_noise = getattr(dn_cfg, 'ENABLED', False)
+                self.depth_noise_prob = getattr(dn_cfg, 'PROBABILITY', 0.5)
+                self.depth_noise_std_range = list(getattr(dn_cfg, 'STD_RANGE', [0.01, 0.03]))
         
         # Initialize Object Style Swap if enabled
         self.object_style_swap = None
-        if use_object_style_swap:
+        if self.use_object_style_swap:
             try:
                 from .dg_augmentations import ObjectStyleSwap
                 self.object_style_swap = ObjectStyleSwap(
-                    p=object_style_swap_prob,
+                    p=self.object_style_swap_prob,
                     blend_mode='alpha',
                     alpha=0.7,
                 )
@@ -343,19 +505,17 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
         
         # Initialize FSDR if enabled
         self.fsdr = None
-        if use_fsdr:
+        if self.use_fsdr:
             try:
                 from .dg_augmentations import DGFSDR
-                self.fsdr = DGFSDR(p=fsdr_prob)
+                self.fsdr = DGFSDR(p=self.fsdr_prob)
             except ImportError:
                 pass  # Fall back to inline implementation
         
-        # Initialize augmentation transforms
-        if use_photometric:
+        # Initialize color jitter transform
+        if self.use_photometric:
             import torchvision.transforms as TV
-            self.color_jitter = TV.ColorJitter(
-                brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1
-            )
+            self.color_jitter = TV.ColorJitter(**self.color_jitter_params)
     
     def build_object_style_index(self, dataset_dicts):
         """Build category index for object style swap from dataset.
@@ -455,6 +615,64 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
         jittered = self.color_jitter(pil_img)
         return np.array(jittered)
     
+    def _apply_gaussian_noise(self, image: np.ndarray) -> np.ndarray:
+        """Apply Gaussian noise to RGB image.
+        
+        Args:
+            image: (H, W, C) RGB image (uint8 or float)
+            
+        Returns:
+            Noisy image
+        """
+        # Convert to float if needed
+        if image.dtype == np.uint8:
+            image = image.astype(np.float32) / 255.0
+            convert_back = True
+        else:
+            convert_back = False
+        
+        # Random std from range
+        std = np.random.uniform(self.gaussian_noise_std_range[0], self.gaussian_noise_std_range[1])
+        noise = np.random.randn(*image.shape).astype(np.float32) * std
+        
+        noisy_image = np.clip(image + noise, 0, 1)
+        
+        if convert_back:
+            noisy_image = (noisy_image * 255).astype(np.uint8)
+        
+        return noisy_image
+    
+    def _apply_depth_noise(self, depth: np.ndarray) -> np.ndarray:
+        """Apply Gaussian noise to depth map.
+        
+        Args:
+            depth: (H, W) or (1, H, W) depth array
+            
+        Returns:
+            Noisy depth
+        """
+        # Handle channel dimension
+        if depth.ndim == 3:
+            depth = depth[0]
+            add_channel = True
+        else:
+            add_channel = False
+        
+        depth = depth.copy()
+        
+        # Random std from range
+        std = np.random.uniform(self.depth_noise_std_range[0], self.depth_noise_std_range[1])
+        
+        # Only add noise where depth is valid
+        valid_mask = depth > 0
+        noise = np.random.randn(*depth.shape).astype(np.float32) * std
+        depth[valid_mask] = np.maximum(0, depth[valid_mask] + noise[valid_mask])
+        
+        if add_channel:
+            depth = depth[np.newaxis, :, :]
+        
+        return depth
+    
     def _apply_depth_dropout(self, depth: np.ndarray) -> np.ndarray:
         """Apply random dropout to depth map.
         
@@ -477,15 +695,17 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
         H, W = depth.shape
         
         # Random rectangles dropout
-        num_drops = np.random.randint(1, 5)
+        num_drops = np.random.randint(self.depth_dropout_num_drops[0], self.depth_dropout_num_drops[1] + 1)
+        min_size, max_size = self.depth_dropout_size
+        
         for _ in range(num_drops):
-            # Random rectangle size (2-10% of image)
-            drop_h = np.random.randint(int(H * 0.02), int(H * 0.1))
-            drop_w = np.random.randint(int(W * 0.02), int(W * 0.1))
+            # Random rectangle size
+            drop_h = np.random.randint(int(H * min_size), max(int(H * max_size), int(H * min_size) + 1))
+            drop_w = np.random.randint(int(W * min_size), max(int(W * max_size), int(W * min_size) + 1))
             
             # Random position
-            y = np.random.randint(0, H - drop_h)
-            x = np.random.randint(0, W - drop_w)
+            y = np.random.randint(0, max(H - drop_h, 1))
+            x = np.random.randint(0, max(W - drop_w, 1))
             
             # Zero out region
             depth[y:y+drop_h, x:x+drop_w] = 0.0
@@ -531,9 +751,13 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
                     scene_type = dataset_dict.get('scene_type', None)
                     image = self._apply_fsdr(image, scene_type)
             
-            # Photometric jitter
+            # Photometric jitter (color jitter)
             if self.use_photometric and np.random.random() < self.photometric_prob:
                 image = self._apply_photometric_jitter(image)
+            
+            # Gaussian noise on RGB
+            if self.use_gaussian_noise and np.random.random() < self.gaussian_noise_prob:
+                image = self._apply_gaussian_noise(image)
         
         # Apply standard geometric augmentations
         aug_input = T.AugInput(image)
@@ -543,13 +767,18 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
         # Apply same transforms to depth
         depth = self._apply_geometric_transforms_to_depth(depth, transforms)
         
-        # Domain generalization augmentations for depth
+        # Domain generalization augmentations for depth (training only)
         if self.is_train:
+            # Depth dropout
             if self.use_depth_dropout and np.random.random() < self.depth_dropout_prob:
                 depth = self._apply_depth_dropout(depth)
+            
+            # Depth Gaussian noise
+            if self.use_depth_noise and np.random.random() < self.depth_noise_prob:
+                depth = self._apply_depth_noise(depth)
         
         # Process depth (clip, normalize)
-        depth = self._process_depth(depth if depth.ndim == 2 else depth[0])
+        depth, depth_stats = self._process_depth(depth if depth.ndim == 2 else depth[0])
         
         image_shape = image.shape[:2]
         
@@ -560,6 +789,9 @@ class DatasetMapper3D_RGBD_DG(DatasetMapper3D_RGBD):
         dataset_dict["depth"] = torch.as_tensor(
             np.ascontiguousarray(depth)
         )
+        
+        # Store depth normalization stats for potential inverse transform
+        dataset_dict["depth_stats"] = depth_stats
         
         if not self.is_train:
             return dataset_dict

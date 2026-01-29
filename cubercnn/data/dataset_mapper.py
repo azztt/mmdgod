@@ -77,6 +77,10 @@ def transform_instance_annotations(annotation, transforms, *, K):
     if isinstance(transforms, (tuple, list)):
         transforms = T.TransformList(transforms)
     
+    # Normalize pose key: use 'pose' if present, else fall back to 'R_cam'
+    if 'pose' not in annotation and 'R_cam' in annotation:
+        annotation['pose'] = annotation['R_cam']
+    
     # bbox is 1d (per-instance bounding box)
     bbox = BoxMode.convert(annotation["bbox"], annotation["bbox_mode"], BoxMode.XYXY_ABS)
     bbox = transforms.apply_box(np.array([bbox]))[0]
@@ -90,9 +94,9 @@ def transform_instance_annotations(annotation, transforms, *, K):
         point3D = annotation['center_cam']
         point2D = K @ np.array(point3D)
         point2D[:2] = point2D[:2] / point2D[-1]
-        annotation["center_cam_proj"] = point2D.tolist()
+        annotation["center_cam_proj"] = point2D.tolist()  # [u, v, z_proj] - keep all 3
 
-        # apply coords transforms to 2D box
+        # apply coords transforms to 2D box (only transform x,y, keep z)
         annotation["center_cam_proj"][0:2] = transforms.apply_coords(
             point2D[np.newaxis][:, :2]
         )[0].tolist()
@@ -126,14 +130,39 @@ def transform_instance_annotations(annotation, transforms, *, K):
                 pose = _M1 @ np.array(annotation["pose"]) @ _M2
                 annotation["pose"] = pose.tolist()
                 annotation["R_cam"] = pose.tolist()
+    else:
+        # Object at zero depth or behind camera - set invalid defaults
+        annotation["center_cam_proj"] = [0.0, 0.0, 0.0]  # [u, v, z]
+        annotation["keypoints"] = [[0, 0, 0]] * 8  # 8 keypoints, all invalid
 
     return annotation
 
 
 def annotations_to_instances(annos, image_size, unknown_categories):
-
+    """Convert annotations to Instances format.
+    
+    Args:
+        annos: List of annotation dicts with category_id, bbox, etc.
+               Annotations with category_id = -1 are ignored (filtered out).
+        image_size: (H, W) tuple
+        unknown_categories: Set of unknown category indices for masking
+    """
+    # Filter out ignored annotations (category_id = -1)
+    # These are set by load_rgbd_json for annotations that should be ignored
+    annos = [obj for obj in annos if obj.get("category_id", -1) >= 0]
+    
     # init
     target = Instances(image_size)
+    
+    if len(annos) == 0:
+        # Return empty instances if no valid annotations
+        target.gt_classes = torch.tensor([], dtype=torch.int64)
+        target.gt_boxes = Boxes(torch.zeros((0, 4)))
+        target.gt_boxes3D = torch.FloatTensor([]).reshape(0, 9)
+        target.gt_poses = torch.FloatTensor([]).reshape(0, 3, 3)
+        target.gt_keypoints = Keypoints(torch.FloatTensor([]).reshape(0, 8, 3))
+        target.gt_unknown_category_mask = torch.zeros((0, 1), dtype=bool)
+        return target
     
     # add classes, 2D boxes, 3D boxes and poses
     target.gt_classes = torch.tensor([int(obj["category_id"]) for obj in annos], dtype=torch.int64)
@@ -146,8 +175,13 @@ def annotations_to_instances(annos, image_size, unknown_categories):
     # do keypoints?
     target.gt_keypoints = Keypoints(torch.FloatTensor([anno['keypoints'] for anno in annos]))
 
-    gt_unknown_category_mask = torch.zeros(max(unknown_categories)+1, dtype=bool)
-    gt_unknown_category_mask[torch.tensor(list(unknown_categories))] = True
+    # Handle empty unknown_categories case
+    if unknown_categories:
+        gt_unknown_category_mask = torch.zeros(max(unknown_categories)+1, dtype=bool)
+        gt_unknown_category_mask[torch.tensor(list(unknown_categories))] = True
+    else:
+        # No unknown categories - create empty mask
+        gt_unknown_category_mask = torch.zeros(1, dtype=bool)
 
     # include available category indices as tensor with GTs
     target.gt_unknown_category_mask = gt_unknown_category_mask.unsqueeze(0).repeat([n, 1])

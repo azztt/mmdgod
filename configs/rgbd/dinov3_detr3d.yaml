@@ -1,0 +1,164 @@
+# Configuration for DINOv3 + DETR3D-style 3D Object Detection
+# Uses DINOv3 backbone with frozen RGB and partially frozen depth
+# Uses DETR3D-style cross-attention head instead of ROI pooling
+
+_BASE_: "Base_RGBD.yaml"
+
+# ===========================================================================
+# Model Architecture
+# ===========================================================================
+MODEL:
+  # Use DINO + DETR3D meta-architecture
+  META_ARCHITECTURE: "DETR3D_RGBD"
+  
+  # ---------------------------
+  # DINOv3 Backbone Settings
+  # ---------------------------
+  BACKBONE:
+    NAME: "build_dino_dual_encoder"
+    
+    # DINOv3 model variant: dinov3-vits16, dinov3-vitb16, dinov3-vitl16
+    # Also supports DINOv2: dinov2-small, dinov2-base, dinov2-large, dinov2-giant
+    DINO_MODEL: "dinov3-vitb16"  # Base model (768 dim, patch_size=16)
+    
+    # RGB encoder: completely frozen for domain invariance
+    RGB_FREEZE_ALL: True
+    
+    # Depth encoder: partially frozen (freeze first 6 of 12 blocks for base)
+    DEPTH_NUM_FROZEN_BLOCKS: 6
+    
+    # Fusion type for RGB+Depth features
+    FUSION_TYPE: "concat"  # concat, add, or gated
+    
+    # Output channels after fusion projection
+    OUT_CHANNELS: 256
+  
+  # Pixel normalization for DINO (ImageNet stats)
+  PIXEL_MEAN: [123.675, 116.28, 103.53]
+  PIXEL_STD: [58.395, 57.12, 57.375]
+  
+  # Depth normalization
+  DEPTH_PIXEL_MEAN: 0.0
+  DEPTH_PIXEL_STD: 1.0
+  
+  # ---------------------------
+  # RPN Settings
+  # ---------------------------
+  ANCHOR_GENERATOR:
+    SIZES: [[32], [64], [128], [256]]  # 4 sizes for p2, p3, p4, p5
+    ASPECT_RATIOS: [[0.5, 1.0, 2.0]]
+  
+  RPN:
+    IN_FEATURES: ["p2", "p3", "p4", "p5"]
+    PRE_NMS_TOPK_TRAIN: 2000
+    PRE_NMS_TOPK_TEST: 1000
+    POST_NMS_TOPK_TRAIN: 1000
+    POST_NMS_TOPK_TEST: 500
+  
+  # ---------------------------
+  # ROI Heads Settings
+  # ---------------------------
+  ROI_HEADS:
+    IN_FEATURES: ["p2", "p3", "p4", "p5"]
+    BATCH_SIZE_PER_IMAGE: 512
+    POSITIVE_FRACTION: 0.25
+  
+  ROI_BOX_HEAD:
+    POOLER_RESOLUTION: 7
+    NUM_FC: 2
+    FC_DIM: 1024
+  
+  # ---------------------------
+  # DETR3D Cube Head Settings
+  # ---------------------------
+  ROI_CUBE_HEAD:
+    # Use DETR3D-style cross-attention head
+    NAME: "DETR3DHead"
+    
+    # Cross-attention settings
+    DETR3D:
+      QUERY_DIM: 256
+      NUM_CROSS_ATTENTION_LAYERS: 4
+      NUM_HEADS: 8
+      FFN_DIM: 1024
+      DROPOUT: 0.1
+    
+    # Pooler settings (for initial feature extraction)
+    POOLER_RESOLUTION: 7
+    POOLER_TYPE: "ROIAlignV2"
+    
+    # Prediction settings
+    POSE_TYPE: "6d"
+    Z_TYPE: "direct"
+    VIRTUAL_DEPTH: True
+    VIRTUAL_FOCAL: 512.0
+    ALLOCENTRIC_POSE: True
+    CHAMFER_POSE: True
+    DISENTANGLED_LOSS: True
+    
+    # Dimension priors
+    DIMS_PRIORS_ENABLED: True
+    DIMS_PRIORS_FUNC: "exp"
+    
+    # Use confidence
+    USE_CONFIDENCE: 1.0
+    
+    # ===========================================
+    # 3D-ONLY Loss Weights (disable 2D box loss)
+    # ===========================================
+    LOSS_W_3D: 1.0
+    LOSS_W_XY: 0.0   # DISABLED - no 2D center prediction
+    LOSS_W_Z: 1.0    # Depth prediction
+    LOSS_W_DIMS: 1.0 # 3D dimensions
+    LOSS_W_POSE: 1.0 # 3D rotation
+    LOSS_W_JOINT: 0.5  # Joint 3D loss
+
+# ===========================================================================
+# Solver Settings
+# ===========================================================================
+SOLVER:
+  TYPE: "adamw"
+  BASE_LR: 0.0001
+  
+  # Learning rate schedule
+  MAX_ITER: 90000
+  STEPS: [60000, 80000]
+  GAMMA: 0.1
+  
+  # Batch size
+  IMS_PER_BATCH: 8
+  
+  # Weight decay
+  WEIGHT_DECAY: 0.05
+  WEIGHT_DECAY_NORM: 0.0
+  
+  # Lower LR for frozen backbone (only trainable parts)
+  BACKBONE_MULTIPLIER: 0.1
+  
+  # Warmup
+  WARMUP_FACTOR: 0.001
+  WARMUP_ITERS: 1000
+  
+  # Checkpointing
+  CHECKPOINT_PERIOD: 5000
+
+# ===========================================================================
+# Input Settings  
+# ===========================================================================
+INPUT:
+  MIN_SIZE_TRAIN: [480, 512, 544, 576, 608]
+  MAX_SIZE_TRAIN: 800
+  MIN_SIZE_TEST: 544
+  MAX_SIZE_TEST: 800
+
+# ===========================================================================
+# Test Settings
+# ===========================================================================
+TEST:
+  DETECTIONS_PER_IMAGE: 100
+  EVAL_PERIOD: 5000
+
+# ===========================================================================
+# Output
+# ===========================================================================
+OUTPUT_DIR: "./output/dinov3_detr3d"
