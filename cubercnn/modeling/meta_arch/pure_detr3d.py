@@ -467,14 +467,14 @@ class PureDETR3D(nn.Module):
     
     def _init_weights(self):
         """Initialize weights."""
-        # Initialize classification head with small random weights
-        # Don't use constant 0 - that prevents learning!
-        nn.init.normal_(self.class_head.weight, std=0.01)
-        # Initialize all biases to -2.0 (prior for low probability), background slightly higher
+        # Use PyTorch default initialization for class_head.weight (kaiming_uniform)
+        # This gives std ~ 0.06 for hidden_dim=256, much better than 0.01
+        # class_head.weight already initialized by nn.Linear.__init__
+        
+        # Initialize biases with focal loss prior
         prior_prob = 0.01
         bias_value = -math.log((1 - prior_prob) / prior_prob)
         nn.init.constant_(self.class_head.bias, bias_value)
-        nn.init.constant_(self.class_head.bias[-1], 0)  # Background neutral
         
         # Initialize query embeddings with larger std for diversity
         nn.init.normal_(self.query_embed.weight, std=1.0)
