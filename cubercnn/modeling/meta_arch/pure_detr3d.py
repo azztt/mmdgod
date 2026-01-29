@@ -467,13 +467,17 @@ class PureDETR3D(nn.Module):
     
     def _init_weights(self):
         """Initialize weights."""
-        # Initialize classification head to predict background initially
-        nn.init.constant_(self.class_head.bias, 0)
-        nn.init.constant_(self.class_head.weight, 0)
-        nn.init.constant_(self.class_head.bias[-1], 2.0)  # Background bias
+        # Initialize classification head with small random weights
+        # Don't use constant 0 - that prevents learning!
+        nn.init.normal_(self.class_head.weight, std=0.01)
+        # Initialize all biases to -2.0 (prior for low probability), background slightly higher
+        prior_prob = 0.01
+        bias_value = -math.log((1 - prior_prob) / prior_prob)
+        nn.init.constant_(self.class_head.bias, bias_value)
+        nn.init.constant_(self.class_head.bias[-1], 0)  # Background neutral
         
-        # Initialize query embeddings
-        nn.init.normal_(self.query_embed.weight, std=0.01)
+        # Initialize query embeddings with larger std for diversity
+        nn.init.normal_(self.query_embed.weight, std=1.0)
         
         # Initialize input projections
         for proj in self.input_proj:
