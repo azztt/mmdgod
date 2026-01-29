@@ -34,4 +34,10 @@ TEST:
 DATASETS:
   TRAIN_MANIFEST: "hypersim_train_sampled.json"
 
+# ===========================================================================
+# WandB Configuration
+# ===========================================================================
+WANDB:
+  NAME: "dinov3_rgbd_base_aug_debug"
+
 OUTPUT_DIR: "./output/dinov3_base_aug_debug"

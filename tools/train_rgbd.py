@@ -770,9 +770,12 @@ def main(args):
     """Main entry point."""
     cfg = setup(args)
     
-    # Initialize WandB if requested
+    # Initialize WandB if requested (from config or args)
     wandb_enabled = False
-    if comm.is_main_process() and args.wandb_project and WANDB_AVAILABLE:
+    wandb_project = args.wandb_project or (cfg.WANDB.PROJECT if cfg.WANDB.ENABLED else None)
+    wandb_name = args.wandb_name or cfg.WANDB.NAME
+    
+    if comm.is_main_process() and wandb_project and WANDB_AVAILABLE:
         # Silence wandb console output
         os.environ["WANDB_SILENT"] = "true"
         
@@ -789,8 +792,8 @@ def main(args):
         }
         
         wandb.init(
-            project=args.wandb_project,
-            name=args.wandb_name or os.path.basename(cfg.OUTPUT_DIR),
+            project=wandb_project,
+            name=wandb_name or os.path.basename(cfg.OUTPUT_DIR),
             config=wandb_config,
             dir=cfg.OUTPUT_DIR,
             resume="allow" if args.resume else None,

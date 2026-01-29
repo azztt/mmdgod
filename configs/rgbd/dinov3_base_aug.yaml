@@ -265,4 +265,12 @@ DATASETS:
   TRAIN_MANIFEST: "hypersim_train_filtered.json"
   TEST: ("hypersim_val_rgbd", "sunrgbd_val_rgbd", "multiscan_val_rgbd", "scannetpp_val_rgbd")
 
+# ===========================================================================
+# WandB Configuration
+# ===========================================================================
+WANDB:
+  ENABLED: True
+  PROJECT: "cube-dgod"
+  NAME: ""  # Will default to output dir name
+
 OUTPUT_DIR: "./output/dinov3_base_aug"

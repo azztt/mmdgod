@@ -350,6 +350,14 @@ def get_cfg_defaults(cfg):
     # Validation split for train/val split evaluation
     cfg.TEST.VAL_SPLIT = 0.2  # Fraction of training data for validation
     cfg.TEST.FULL_EVAL_PERIOD = 0  # Frequency for full evaluation on external test sets (0 = disabled)
+    
+    # ===========================================================================
+    # WandB Configuration
+    # ===========================================================================
+    cfg.WANDB = CN()
+    cfg.WANDB.ENABLED = False  # Enable WandB logging
+    cfg.WANDB.PROJECT = ""  # WandB project name
+    cfg.WANDB.NAME = ""  # WandB run name (defaults to output dir name if empty)
 
     cfg.INPUT.RANDOM_FLIP = "horizontal"
 
