@@ -370,6 +370,7 @@ class PureDETR3D(nn.Module):
         self.d_model = d_model
         self.num_classes = cfg.MODEL.ROI_HEADS.NUM_CLASSES
         self.num_queries = num_queries
+        self.pose_type = pose_type  # Store pose type for loss computation
         
         # Input projections for each feature level (project to d_model)
         self.input_proj = nn.ModuleList()

@@ -130,12 +130,14 @@ def simple_register(dataset_name, filter_settings, filter_empty=False, datasets_
     path_to_json = os.path.join(datasets_root_path, dataset_name + '.json')
     path_to_image_root = 'datasets'
 
-    DatasetCatalog.register(dataset_name, lambda: load_omni3d_json(
-        path_to_json, path_to_image_root, 
-        dataset_name, filter_settings, filter_empty=filter_empty
-    ))
+    # Check if already registered to avoid duplicate registration
+    if dataset_name not in DatasetCatalog:
+        DatasetCatalog.register(dataset_name, lambda: load_omni3d_json(
+            path_to_json, path_to_image_root, 
+            dataset_name, filter_settings, filter_empty=filter_empty
+        ))
 
-    MetadataCatalog.get(dataset_name).set(json_file=path_to_json, image_root=path_to_image_root, evaluator_type="coco")
+        MetadataCatalog.get(dataset_name).set(json_file=path_to_json, image_root=path_to_image_root, evaluator_type="coco")
 
 class Omni3D(COCO):
     '''
