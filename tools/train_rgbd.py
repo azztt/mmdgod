@@ -870,6 +870,13 @@ def main(args):
                 split_meta.thing_classes = train_meta.thing_classes
             if hasattr(train_meta, 'thing_dataset_id_to_contiguous_id'):
                 split_meta.thing_dataset_id_to_contiguous_id = train_meta.thing_dataset_id_to_contiguous_id
+            # Copy json_file and image_root for evaluation
+            if hasattr(train_meta, 'json_file'):
+                split_meta.json_file = train_meta.json_file
+            if hasattr(train_meta, 'image_root'):
+                split_meta.image_root = train_meta.image_root
+            if hasattr(train_meta, 'evaluator_type'):
+                split_meta.evaluator_type = train_meta.evaluator_type
         
         logger.info(f"  Training split: {len(train_split)} samples ({train_split_name})")
         logger.info(f"  Validation split: {len(val_split)} samples ({val_split_name})")
